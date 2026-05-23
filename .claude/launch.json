@@ -24,6 +24,12 @@
       "runtimeExecutable": "docker",
       "runtimeArgs": ["compose", "up", "prometheus", "agent", "db", "redis"],
       "port": 9090
+    },
+    {
+      "name": "web",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev", "--prefix", "web"],
+      "port": 3001
     }
   ]
 }

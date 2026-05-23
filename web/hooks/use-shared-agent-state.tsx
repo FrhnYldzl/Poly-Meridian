@@ -1,26 +1,33 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { createContext, useContext, useEffect, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import { fetchState, streamUrl } from "@/lib/api";
 import type { AgentSnapshot, StreamEvent } from "@/lib/types";
 
-interface State {
+interface SharedState {
   snapshot: AgentSnapshot | null;
   connected: boolean;
   error: string | null;
   lastUpdateMs: number;
 }
 
-const initial: State = { snapshot: null, connected: false, error: null, lastUpdateMs: 0 };
+const initial: SharedState = {
+  snapshot: null,
+  connected: false,
+  error: null,
+  lastUpdateMs: 0,
+};
 
-export function useAgentState(): State {
-  const [state, setState] = useState<State>(initial);
+const Ctx = createContext<SharedState>(initial);
+
+export function AgentStateProvider({ children }: { children: ReactNode }) {
+  const [state, setState] = useState<SharedState>(initial);
   const esRef = useRef<EventSource | null>(null);
 
   useEffect(() => {
     let cancelled = false;
 
-    // Initial bootstrap snapshot.
     fetchState()
       .then((snap) => {
         if (!cancelled) setState((s) => ({ ...s, snapshot: snap, lastUpdateMs: Date.now() }));
@@ -29,8 +36,6 @@ export function useAgentState(): State {
         if (!cancelled) setState((s) => ({ ...s, error: String(e) }));
       });
 
-    // SSE stream. Deferred so initial paint completes + screenshot/snapshot
-    // tools see network-idle before the long-poll begins.
     let es: EventSource | null = null;
     const t = setTimeout(() => {
       if (cancelled) return;
@@ -56,10 +61,14 @@ export function useAgentState(): State {
     };
   }, []);
 
-  return state;
+  return <Ctx.Provider value={state}>{children}</Ctx.Provider>;
 }
 
-function reduce(s: State, evt: StreamEvent): State {
+export function useSharedAgentState(): SharedState {
+  return useContext(Ctx);
+}
+
+function reduce(s: SharedState, evt: StreamEvent): SharedState {
   const now = Date.now();
   switch (evt.type) {
     case "snapshot":
