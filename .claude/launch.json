@@ -3,7 +3,7 @@
   "configurations": [
     {
       "name": "agent",
-      "runtimeExecutable": ".venv/Scripts/python.exe",
+      "runtimeExecutable": "C:/Users/FERHAN YILDIZLI/OneDrive/Desktop/05 - Teknoloji Projeleri/Poly Meridian/.venv/Scripts/python.exe",
       "runtimeArgs": ["-m", "poly_meridian.main"],
       "port": 8000
     },

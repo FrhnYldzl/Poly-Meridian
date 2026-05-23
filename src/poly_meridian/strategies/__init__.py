@@ -4,6 +4,7 @@ from poly_meridian.strategies.arbitrage import ArbitrageStrategy
 from poly_meridian.strategies.base import BaseStrategy
 from poly_meridian.strategies.sentiment import SentimentStrategy
 from poly_meridian.strategies.cluster_builder import ClusterStateBuilder
+from poly_meridian.strategies.fundamentals import FundamentalsStrategy
 from poly_meridian.strategies.smart_money import (
     ClusterState,
     SmartMoneyStrategy,
@@ -16,6 +17,7 @@ __all__ = [
     "BaseStrategy",
     "ClusterState",
     "ClusterStateBuilder",
+    "FundamentalsStrategy",
     "SentimentStrategy",
     "SignalAggregator",
     "SmartMoneyStrategy",

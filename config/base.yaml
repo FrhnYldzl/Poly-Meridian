@@ -31,7 +31,7 @@ strategies:
     - sentiment
     - smart_money
     - stat_quant
-    # fundamentals — wired in Phase 5
+    - fundamentals
 
 aggregator:
   conflict_threshold: 0.10

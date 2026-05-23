@@ -25,6 +25,7 @@ import structlog
 
 from poly_meridian.domain import Action, AggregatedSignal, Market, StrategySignal
 from poly_meridian.strategies.arbitrage import ArbitrageStrategy
+from poly_meridian.strategies.fundamentals import FundamentalsStrategy
 from poly_meridian.strategies.sentiment import SentimentStrategy
 from poly_meridian.strategies.smart_money import SmartMoneyStrategy
 from poly_meridian.strategies.stat_quant import StatQuantStrategy
@@ -35,16 +36,18 @@ log = structlog.get_logger("poly_meridian.aggregator")
 # Per-strategy helper registry: each strategy contributes (price, size_pct) for
 # the aggregator without the aggregator knowing strategy internals.
 _PRICE_HELPERS: dict[str, Callable[[dict[str, Any]], Decimal]] = {
-    "arbitrage":   ArbitrageStrategy.proposed_price_from_signal,
-    "sentiment":   SentimentStrategy.proposed_price_from_signal,
-    "smart_money": SmartMoneyStrategy.proposed_price_from_signal,
-    "stat_quant":  StatQuantStrategy.proposed_price_from_signal,
+    "arbitrage":    ArbitrageStrategy.proposed_price_from_signal,
+    "sentiment":    SentimentStrategy.proposed_price_from_signal,
+    "smart_money":  SmartMoneyStrategy.proposed_price_from_signal,
+    "stat_quant":   StatQuantStrategy.proposed_price_from_signal,
+    "fundamentals": FundamentalsStrategy.proposed_price_from_signal,
 }
 _SIZE_HELPERS: dict[str, Callable[[dict[str, Any], Decimal, float], float]] = {
-    "arbitrage":   ArbitrageStrategy.proposed_size_pct,
-    "sentiment":   SentimentStrategy.proposed_size_pct,
-    "smart_money": SmartMoneyStrategy.proposed_size_pct,
-    "stat_quant":  StatQuantStrategy.proposed_size_pct,
+    "arbitrage":    ArbitrageStrategy.proposed_size_pct,
+    "sentiment":    SentimentStrategy.proposed_size_pct,
+    "smart_money":  SmartMoneyStrategy.proposed_size_pct,
+    "stat_quant":   StatQuantStrategy.proposed_size_pct,
+    "fundamentals": FundamentalsStrategy.proposed_size_pct,
 }
 
 

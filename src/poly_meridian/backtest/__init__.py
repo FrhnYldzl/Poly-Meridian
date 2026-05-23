@@ -18,25 +18,31 @@ from poly_meridian.backtest.reports import (
 )
 from poly_meridian.backtest.walkforward import (
     Fold,
+    FoldResult,
+    WalkForwardResult,
     iter_folds,
     make_folds,
+    run_folds,
     slice_dataset,
 )
 
 __all__ = [
     "Fold",
+    "FoldResult",
     "HistoricalDataset",
     "HistoricalTick",
     "PerformanceMetrics",
     "ReplayConfig",
     "ReplayResult",
     "Replayer",
+    "WalkForwardResult",
     "compute_all",
     "iter_folds",
     "make_folds",
     "meets_live_gate",
     "report_json",
     "report_markdown",
+    "run_folds",
     "slice_dataset",
     "write_report",
 ]

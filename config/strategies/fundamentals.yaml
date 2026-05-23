@@ -1,18 +1,28 @@
 # FundamentalsStrategy — see MASTER_SPEC §14.5.
 
-enabled: false                       # turns on in Phase 5
+enabled: true
+
+# Aggregate thresholds across all categories
+min_edge: 0.05                       # |our_p - market_p| must exceed this
+min_confidence: 0.50                 # resolver confidence floor
+max_size_pct: 0.025                  # Kelly-equivalent half-cap
 
 categories:
   politics:
     enabled: true
-    poll_aggregator: "538-style"
-    poll_bias_correction: true
+    recency_half_life_days: 14
+    min_total_weight: 5.0
+    min_polls: 3
   sports:
     enabled: true
     elo_k_factor: 32
+    base_rating: 1500
+    default_home_advantage_elo: 80
   crypto:
     enabled: true
-    use_funding_rate: true
-    use_exchange_netflow: true
+    default_annual_vol: 0.80
+    funding_weight: 2.0
+    netflow_weight: 0.00000005
   macro:
-    enabled: false
+    enabled: false                   # opt-in (low-signal baseline today)
+    lookback_days: 180

@@ -3,7 +3,13 @@ from poly_meridian.execution.base import Executor
 from poly_meridian.execution.fees import DEFAULT_FEES, FeeSchedule
 from poly_meridian.execution.order_router import OrderRouter
 from poly_meridian.execution.paper_executor import PaperExecutor
-from poly_meridian.execution.slippage_model import estimate_slippage_bps, walk_book_for_fill
+from poly_meridian.execution.slippage_model import (
+    SlippageFit,
+    estimate_slippage_bps,
+    fit_from_fills,
+    slippage_from_fill,
+    walk_book_for_fill,
+)
 
 __all__ = [
     "DEFAULT_FEES",
@@ -11,6 +17,9 @@ __all__ = [
     "FeeSchedule",
     "OrderRouter",
     "PaperExecutor",
+    "SlippageFit",
     "estimate_slippage_bps",
+    "fit_from_fills",
+    "slippage_from_fill",
     "walk_book_for_fill",
 ]
