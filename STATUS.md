@@ -2,116 +2,102 @@
 
 Last updated: 2026-05-23
 
-## Phase 5b — Fundamentals + Hardening ✅ (skeleton complete, awaiting live verification)
+## Phase 6 — Live executor + promotion gate ✅ (code complete, awaiting paper observation)
 
 ### Done
 
-**Fundamentals subsystem** ([`src/poly_meridian/fundamentals/`](src/poly_meridian/fundamentals))
-- [`base.py`](src/poly_meridian/fundamentals/base.py) — `CategoryResolver` ABC, `ProbabilityEstimate` (p_yes + confidence + rationale), `FundamentalsContext` typed bag (polls, Elo ratings, spot prices, funding rates, netflow, economic events)
-- [`politics.py`](src/poly_meridian/fundamentals/politics.py) — `PoliticsResolver`: weight by `sqrt(sample_size) × methodology_weight × time_decay`, subtract `house_bias`, confidence scales with total weight + source diversity (538-style aggregator)
-- [`sports.py`](src/poly_meridian/fundamentals/sports.py) — `EloEngine` (stateless K=32 default, base 1500) + `SportsResolver` with home-advantage Elo bonus, supports YES=home or YES=away
-- [`crypto.py`](src/poly_meridian/fundamentals/crypto.py) — `CryptoResolver`: log-normal random walk with drift = `funding_weight × annualized_funding + netflow_weight × netflow_24h`, normal CDF via A&S 7.1.26 polynomial; works for `direction: above|below`
-- [`macro.py`](src/poly_meridian/fundamentals/macro.py) — `MacroResolver`: heuristic hawkish/dovish ratio over `lookback_days` of economic events
-- [`strategies/fundamentals.py`](src/poly_meridian/strategies/fundamentals.py) — `FundamentalsStrategy` dispatches by `market.category` → resolver, emits signal when `|our_p − market_p| > min_edge` and `confidence ≥ min_confidence`
-- Aggregator + helpers wired ([`strategies/__init__.py`](src/poly_meridian/strategies/__init__.py))
+**CLOB authed client** ([`ingestion/clob_client.py`](src/poly_meridian/ingestion/clob_client.py))
+- `_try_import_clob()` resolves `py_clob_client_v2` first, falls back to `py_clob_client`.
+- `init_authed()` brings up the authed client: tries L2 first, falls back to L1-derive on the fly with a warning to save derived creds to `.env`.
+- `_build_creds()` accommodates multiple shapes — library-version-tolerant.
 
-**Twitter provider real impl** ([`ingestion/twitter_provider.py`](src/poly_meridian/ingestion/twitter_provider.py))
-- `TwitterStreamSource(IngestionSource)` — X API v2 filtered stream
-- Async streaming via `httpx.stream`, rule installation/teardown on start, exponential-backoff reconnect (1/2/5/10/30s), heartbeat handling
-- Default rules: federal reserve, Reuters, WSJ, NYT politics, Axios + Fed/crypto keywords
-- Verified-only + min-followers filter (default 100K)
-- `backfill_recent()` for catch-up after disconnect
-- Graceful disable when `X_BEARER_TOKEN` missing
+**LiveExecutor** ([`execution/live_executor.py`](src/poly_meridian/execution/live_executor.py))
+- `Executor(ABC)` impl with `mode = settings.mode` (live-conservative or live-normal).
+- **Hard safety:** constructor raises in paper mode.
+- `submit()` → posts via `py-clob-client`'s `create_order` + `post_order` (or market variant for FOK/FAK), wraps sync calls in `loop.run_in_executor`.
+- `_invoke()` tries multiple library method names for cross-version compatibility.
+- `cancel()` calls venue `cancel`/`cancel_order` on the venue-side ID.
+- `reconcile()` fallback path: if a tracked order is no longer in `get_orders()` → mark FILLED (real fills come via user-channel WS).
+- Fee schedule integration (same as PaperExecutor).
+- Graceful submit-error handling: any exception → `Order.status = REJECTED` + structured log, agent stays up.
 
-**Slippage re-fit** ([`execution/slippage_model.py`](src/poly_meridian/execution/slippage_model.py))
-- `SlippageFit` dataclass + `fit_from_fills()` — log-log linear regression on `(size/depth, slippage_bps)` observations, recovers `a` and `b` from realized paper-fill data
-- `slippage_from_fill()` — convert single fill to observed bps for ingestion into the regression buffer
-- Phase 2 defaults stay until ≥10 real fills observed
+**User-channel WS** ([`ingestion/clob_user_ws.py`](src/poly_meridian/ingestion/clob_user_ws.py))
+- `ClobUserChannel(IngestionSource)` streams `wss://ws-subscriptions-clob.polymarket.com/ws/user`.
+- HMAC auth (api_key + secret + passphrase).
+- Dispatches `order`/`trade` events to caller callbacks → LiveExecutor wires these to its order book + ledger.
+- Exponential backoff reconnect (1/2/5/10/30s + jitter).
+- Graceful disable when API creds missing.
 
-**Walk-forward multi-fold runner** ([`backtest/walkforward.py`](src/poly_meridian/backtest/walkforward.py))
-- `FoldResult` + `WalkForwardResult` typed containers
-- `run_folds()` async runner: per fold, fresh strategies (via factory), runs `Replayer`, collects metrics
-- `aggregate_metrics()`: mean Sharpe, median Sharpe, worst max-DD, total trades, mean win rate
+**Promotion gate** ([`promotion.py`](src/poly_meridian/promotion.py))
+- **Real DB-backed checks (no more stubs):**
+  - `check_paper_history_age` — oldest `our_orders` row with mode='paper' ≥ N days
+  - `check_paper_metrics` — Sharpe + Max DD computed from `pnl_daily` series via `backtest.metrics.compute_all()`
+  - `check_initial_cap_ratio` — proposed live capital ≤ 5% of latest paper NAV
+  - `check_alerting` — Slack/Telegram webhook configured
+  - `check_drill(name)` — file-based confirmation (operator runs `poly-meridian mark-drill <name>`)
+- `mark_drill()` + `.promotion_flags/` directory (gitignored)
+- `run_gate()` runs all checks in one shot, returns `PromotionReport(passed, checks, render)`
+- **Fail-closed:** any unknown/erroring check → `passed=False`
 
-**Chaos engineering** ([`tests/chaos/test_chaos_drills.py`](tests/chaos/test_chaos_drills.py))
-- Gamma client recovers from transient timeout (1 retry)
-- Gamma client fails cleanly after max retries (no crash)
-- Kill-switch engages on runaway API errors (rate-based)
-- Kill-switch engages on WS disconnect grace exceeded
-- Kill-switch engages on wallet balance mismatch
-- **Risk policy rejects every order under kill-switch** (the immutable rule)
-- Concurrent kill-switch observations are race-safe (idempotent engagement)
-- Paper executor rejects orders for unknown tokens (defensive)
+**CLI** ([`cli.py`](src/poly_meridian/cli.py))
+- `poly-meridian promote-to-live --proposed-live-usd 500 --min-paper-days 30` — runs the gate, exits 0/1
+- `poly-meridian mark-drill <name>` — flips a drill flag (kill_switch / reconnect / secrets / backup / legal)
+- Also: `run`, `status`, `backtest`, `walkforward`
 
-**DR drill** ([`scripts/dr_drill.py`](scripts/dr_drill.py))
-- Interactive runbook: backup → restore check → secret rotation → kill-switch drill → health checks
-- Exit 1 on any unconfirmed step → fits §19 promotion gate
+**Mode-aware executor selection** ([`main.py`](src/poly_meridian/main.py))
+- `_build_executor()` is the ONE place that branches paper vs live.
+- Starting NAV: $100K virtual in paper, $500 conservative in live.
+- All other wiring (strategies, risk, aggregator, pipeline) is mode-agnostic.
 
-**Operational runbook** ([`docs/runbook.md`](docs/runbook.md))
-- Backup/restore procedures (pg_dump + pg_restore)
-- Secret rotation walkthrough (wallet migration)
-- Kill-switch manual engage/disengage commands
-- Paper→live promotion checklist (§19)
-- Chaos drill expectations
-- Incident response first-30-min playbook
+**Scripts** ([`scripts/promote_to_live.py`](scripts/promote_to_live.py)) replaced — wraps real `promotion.run_gate()` with typer CLI.
 
-### Tests added (5 new files)
-- `test_fundamentals.py` — Politics aggregation + recency + bias correction; Elo math; Sports YES=home/away; Crypto p(above) near/far targets; Macro hawkish ratio; insufficient-input guards
-- `test_fundamentals_strategy.py` — disabled, YES/NO emission, edge threshold, confidence floor, unknown category
-- `test_slippage_fit.py` — single-fill observation, recovery of synthetic a/b, noise robustness, few-sample guard
-- `test_walkforward_runner.py` — per-fold results, aggregate_metrics summary
-- `tests/chaos/test_chaos_drills.py` — 8 chaos scenarios
+### Tests (2 new, 43 total)
+- `test_live_executor.py` — refuses paper mode; limit + market order paths; cancel; reconcile FILLED detection; submit-error → REJECTED (mocked CLOB throughout)
+- `test_promotion.py` — drill mark/check, paper history age (zero / sufficient), initial cap ratio (pass/fail), alerting (env-toggled), report render PASS/FAIL
 
-### Configs
-- [`config/strategies/fundamentals.yaml`](config/strategies/fundamentals.yaml): `enabled: true`, per-category thresholds, min_edge 0.05, min_confidence 0.50, Macro opt-in (default off)
-- [`config/base.yaml`](config/base.yaml): all 5 strategies now enabled — arbitrage, sentiment, smart_money, stat_quant, fundamentals
-
-### Phase 5b acceptance gate
+### Phase 6 acceptance gate
 | Check | Status | Notes |
 |---|---|---|
-| All ABCs still abstract | ✅ | Smoke test passes |
-| Risk gate enforced (incl. chaos drills) | ✅ | `test_risk_policy_rejects_every_order_under_kill_switch` |
-| 5 strategies live: arb / sentiment / smart_money / stat_quant / fundamentals | ✅ | Aggregator registry covers all 5 |
-| Twitter degrades gracefully without token | ✅ | `start()` logs warning, returns |
-| Slippage fit converges on synthetic data | ✅ | `test_fit_from_fills_recovers_true_params` |
-| Walk-forward runs across folds with fresh state per fold | ✅ | strategy_factory pattern enforces isolation |
-| Chaos tests pass | ✅ | 8 drills in tests/chaos |
-| DR drill runbook complete | ✅ | docs/runbook.md + scripts/dr_drill.py |
-| `make test` passes (40+ test files) | ⏳ | All Phase 5b tests pure compute / asyncio |
+| LiveExecutor cannot start in paper mode | ✅ | Constructor raises; `test_live_executor_refuses_in_paper_mode` enforces |
+| Risk gate still enforced on live mode | ✅ | Pipeline unchanged; `RiskPolicy.evaluate` before `executor.submit` |
+| Promotion gate fails closed | ✅ | Any check error → `passed=False` |
+| Promotion gate checks are real, not stubs | ✅ | DB-backed paper_history_age + paper_metrics; alerting reads env; drills are flag files |
+| Mode-aware executor wired | ✅ | `_build_executor()` is the single branch point |
+| `make test` passes (43 test files) | ⏳ | All Phase 6 tests pure compute / async with mocks |
+| py-clob-client method names verified | ⚠️ | We try multiple method names per library version; operator should run `poly-meridian status` after `uv pip install -e ".[polymarket]"` to confirm authed init succeeds |
 
-### Deliberate deferrals (Phase 6 + UI phase)
-- **Real-world data plumbing for Fundamentals:** resolver framework is ready, but actual feeds (538 poll JSON, ESPN Elo scrape, Binance funding rates, Fed calendar parse) need API keys + adapters. Each is ~1 day of work + a paid data source. Phase 6 picks the highest-conviction ones.
-- **Operator UI (Bloomberg-style)** — held to its own dedicated phase per user request "proje tam bitsin sonra UI UX kısmına geçelim". Backend now complete.
-- **Twitter rules from config file** — defaults baked in for now; `config/twitter_rules.yaml` lands with UI phase when there's somewhere to edit them.
-- **Live executor (`py-clob-client` authed)** — Phase 6 task.
-- **`promote_to_live.py` real wiring** — checks currently `_todo()` stubs; Phase 6 hooks them to real metrics queries.
+### Operator next steps (THE actual go-live path)
 
-## Overall progress — backend complete
+1. **Run paper observation 30+ days.**
+   - `make up` with `MODE=paper`
+   - Let it run continuously. Confirm `pm_signal_emitted_total`, `pm_order_submitted_total{mode="paper"}`, `pm_news_processed_total` grow on Grafana.
+2. **Run drills, mark each as done:**
+   ```bash
+   docker compose run --rm agent python -m poly_meridian.cli mark-drill kill_switch
+   docker compose run --rm agent python -m poly_meridian.cli mark-drill reconnect
+   docker compose run --rm agent python -m poly_meridian.cli mark-drill secrets
+   docker compose run --rm agent python -m poly_meridian.cli mark-drill backup
+   docker compose run --rm agent python -m poly_meridian.cli mark-drill legal
+   ```
+3. **Configure alerting:** set `SLACK_WEBHOOK_URL` (or `TELEGRAM_BOT_TOKEN`+`TELEGRAM_CHAT_ID`) in Railway env vars.
+4. **Run the gate when ready:**
+   ```bash
+   docker compose run --rm agent python -m poly_meridian.cli promote-to-live \
+       --proposed-live-usd 500 --min-paper-days 30
+   ```
+5. **If PASS:** flip `MODE=live-conservative` in Railway env, redeploy. Watch first 24h closely.
+6. **Scale-up plan** (§24 Phase 6): $500 → $5K (after 1 month positive) → $25K (after 6 months).
 
-| Phase | Durum | Notlar |
-|---|---|---|
-| 0 Setup | ✅ | Scaffold + Docker + Railway config |
-| 1 Data layer | ✅ | Gamma + CLOB + WS + GDELT |
-| 2 Arb + Risk + Paper | ✅ | First real alpha |
-| 3 Sentiment + SmartMoney v1 | ✅ | OpenAI + Claude scorer |
-| 4 Backtest + StatQuant | ✅ | Replay engine + walk-forward folds |
-| 5a Smart Money v2 (Follow-on) | ✅ | 3-tier + leaderboard scraper |
-| **5b Fundamentals + Hardening** | ✅ | **5 strategies, chaos, DR, runbook** |
-| 6 Kademeli canlı | 🔄 sıradaki | Paper run → live promotion checklist |
-| **UI/UX (Bloomberg-style)** | ⏳ | After Phase 6 per user direction |
+### Backend complete — what's left
 
-**Engine is feature-complete.** Phase 6 is operational (paper observation → live ramp), then UI/UX gets its own dedicated push.
+| Phase | Durum |
+|---|---|
+| 0-5 | ✅ |
+| **6 Kademeli canlı** | ✅ **code-side done** — paper run → gate → live is now operator-driven |
+| **UI/UX (Bloomberg-style)** | 🔄 Sıradaki — proper visual interface |
 
 ## Open questions for user
-1. **Phase 6 trigger:** ready to start paper observation period now (~4-8 weeks per spec §19)? Or keep iterating backend?
-2. **Leaderboard endpoint** — still pending Chrome devtools inspection (from Phase 5a)
-3. **Tier 3 auto-trade** — stays off per spec (no change needed unless you want to flip)
-4. **Paid data sources** — for Fundamentals to actually fire in production we'll need at least one paid feed (cheapest: 538 polls free RSS / ESPN Elo scrape free / Binance funding free / Trading Economics calendar $30/mo)
-
-## How to verify Phase 5b locally
-```bash
-make test                         # 40+ test files now
-docker compose run --rm agent python -m pytest tests/chaos/ -v
-docker compose run --rm agent python -m scripts.dr_drill        # interactive
-# See docs/runbook.md for the full operator playbook.
-```
+1. **py-clob-client install + verification** — `uv pip install -e ".[polymarket]"` includes it; run agent locally in paper mode and verify `clob.authed.init_ok` log line appears after setting `POLYMARKET_PRIVATE_KEY`.
+2. **Smart wallet seeds + leaderboard endpoint** — still pending from Phase 5a operator action items.
+3. **Paid data feeds for Fundamentals** — decide which categories you want live (Politics polls / Sports Elo / Crypto funding / Macro calendar).
+4. **UI scope** — when we get there: Bloomberg-style operator terminal. Stack candidates: Tauri+React / Textual TUI / Next.js. Wanted feature list?

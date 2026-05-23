@@ -300,19 +300,30 @@ async def _pipeline_loop(
             await ws_source.stop()
 
 
+def _build_executor(mode: str) -> Any:
+    """Pick PaperExecutor or LiveExecutor based on MODE — the only place this branches."""
+    from poly_meridian.domain import Mode
+    if mode in (Mode.LIVE_CONSERVATIVE.value, Mode.LIVE_NORMAL.value, "live-conservative", "live-normal"):
+        from poly_meridian.execution import LiveExecutor
+        return LiveExecutor()
+    return PaperExecutor()
+
+
 def _build_pipeline_and_news_proc() -> tuple[Pipeline, NewsProcessor | None]:
     arb_cfg = _load_yaml("strategies/arbitrage.yaml")
     sent_cfg = _load_yaml("strategies/sentiment.yaml")
     sm_cfg = _load_yaml("strategies/smart_money.yaml")
     limits = _load_risk_limits()
+    settings = get_settings()
 
     arbitrage = ArbitrageStrategy(arb_cfg)
     sentiment = SentimentStrategy(sent_cfg)
     smart_money = SmartMoneyStrategy(sm_cfg)
 
     aggregator = SignalAggregator(max_size_pct_per_position=limits.max_position_pct_of_bankroll)
-    ledger = Ledger(starting_cash_usd=Decimal("100000"))
-    executor = PaperExecutor()
+    starting_nav = Decimal("100000") if str(settings.mode) == "paper" else Decimal("500")
+    ledger = Ledger(starting_cash_usd=starting_nav)
+    executor = _build_executor(str(settings.mode))
     risk = DefaultRiskPolicy(strategy_name="poly_meridian", limits=limits)
 
     pipeline = Pipeline(

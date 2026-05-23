@@ -52,3 +52,12 @@ data/
 
 # OS
 Thumbs.db
+
+# Promotion drill flag files (operator-local)
+.promotion_flags/
+
+# Backtest reports (large, generated per-run)
+reports/
+
+# DB backups
+backups/
