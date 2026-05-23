@@ -23,6 +23,7 @@ import structlog
 import yaml
 from prometheus_client import Counter, Gauge, start_http_server
 
+from poly_meridian.api import AgentStateBroker, build_app
 from poly_meridian.execution import PaperExecutor
 from poly_meridian.ingestion import GammaClient, GdeltNewsSource
 from poly_meridian.ingestion.book import LocalBook
@@ -103,27 +104,56 @@ def _load_smart_wallets() -> list[str]:
     return [w for w in wallets if isinstance(w, str) and w.startswith("0x")]
 
 
-async def _serve_health(port: int) -> None:
-    from http import HTTPStatus
-    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-
-    class Handler(BaseHTTPRequestHandler):
-        def do_GET(self) -> None:  # noqa: N802
-            if self.path == "/health":
-                self.send_response(HTTPStatus.OK)
-                self.send_header("Content-Type", "application/json")
-                self.end_headers()
-                self.wfile.write(b'{"status":"ok"}')
-            else:
-                self.send_response(HTTPStatus.NOT_FOUND)
-                self.end_headers()
-
-        def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
+async def _broker_refresh_loop(
+    stop: asyncio.Event,
+    pipeline: Pipeline,
+    broker: AgentStateBroker,
+) -> None:
+    """Pulls portfolio + kill-switch state every 5s and pushes to the broker."""
+    while not stop.is_set():
+        try:
+            snap = snapshot(pipeline.ledger)
+            broker.update_portfolio(
+                nav_usd=snap.nav_usd,
+                cash_usd=snap.cash_usd,
+                open_position_count=snap.open_position_count,
+                daily_pnl_pct=snap.daily_pnl_pct,
+                total_exposure_pct=snap.total_exposure_pct,
+                open_positions=[
+                    {
+                        "token_id": p.token_id,
+                        "qty": float(p.qty),
+                        "avg_cost": float(p.avg_cost),
+                        "last_mark": float(p.last_mark),
+                        "unrealized_pnl": float(p.qty * (p.last_mark - p.avg_cost)),
+                    }
+                    for p in pipeline.ledger.positions()
+                ],
+            )
+            broker.update_kill_switch(
+                engaged=pipeline.risk.is_kill_switch_engaged(),
+                reason=str(pipeline.risk.kill_switch.reason) if pipeline.risk.kill_switch.engaged else None,
+            )
+        except Exception:
+            pass
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=5.0)
             return
+        except asyncio.TimeoutError:
+            continue
 
-    server = ThreadingHTTPServer(("0.0.0.0", port), Handler)  # noqa: S104
-    loop = asyncio.get_running_loop()
-    await loop.run_in_executor(None, server.serve_forever)
+
+async def _serve_api(port: int, broker: AgentStateBroker) -> None:
+    """FastAPI app serving /health + /api/state + /api/stream (SSE)."""
+    import uvicorn
+
+    app = build_app(broker)
+    config = uvicorn.Config(
+        app, host="0.0.0.0", port=port,    # noqa: S104
+        log_level="warning", access_log=False, loop="asyncio",
+    )
+    server = uvicorn.Server(config)
+    await server.serve()
 
 
 async def _gamma_sync_loop(
@@ -395,8 +425,19 @@ async def run() -> None:
     pipeline, news_proc = _build_pipeline_and_news_proc()
     market_cache: dict[str, Any] = {"markets": []}
 
+    # Operator dashboard broker — agent pushes state here, UI subscribes via SSE.
+    broker = AgentStateBroker()
+    broker.update_mode(str(settings.mode))
+    broker.update_strategies([
+        s.name for s in (
+            pipeline.arbitrage, pipeline.sentiment, pipeline.smart_money,
+        ) if s is not None and getattr(s, "enabled", False)
+    ])
+    # Expose broker on pipeline so its hooks can push events.
+    pipeline.broker = broker  # type: ignore[attr-defined]
+
     tasks: list[asyncio.Task[None]] = [
-        asyncio.create_task(_serve_health(settings.prometheus_port), name="health"),
+        asyncio.create_task(_serve_api(settings.prometheus_port, broker), name="api"),
         asyncio.create_task(
             _gamma_sync_loop(stop_event, market_cache, news_proc, log), name="gamma_sync"
         ),
@@ -404,6 +445,7 @@ async def run() -> None:
         asyncio.create_task(
             _pipeline_loop(stop_event, pipeline, market_cache, log), name="pipeline"
         ),
+        asyncio.create_task(_broker_refresh_loop(stop_event, pipeline, broker), name="broker_refresh"),
     ]
     if news_proc is not None and db_ok:
         tasks.append(

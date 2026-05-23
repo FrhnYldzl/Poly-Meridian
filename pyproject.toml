@@ -31,6 +31,9 @@ dependencies = [
     "pandas>=2.2",
     # Observability
     "prometheus-client>=0.20",
+    # API server (operator dashboard backend)
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
 ]
 
 [project.optional-dependencies]

@@ -1,0 +1,51 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body {
+  background-color: theme("colors.terminal.bg");
+  color: theme("colors.terminal.text");
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Subtle scrollbars for the terminal vibe. */
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-track {
+  background: theme("colors.terminal.bg");
+}
+*::-webkit-scrollbar-thumb {
+  background: theme("colors.terminal.border");
+  border-radius: 9999px;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: theme("colors.terminal.borderBright");
+}
+
+/* Numeric tabular figures for dense data. */
+.numeric {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1, "zero" 1;
+}
+
+/* Focus ring tuned for the dark theme. */
+*:focus-visible {
+  outline: 2px solid theme("colors.terminal.amber");
+  outline-offset: 1px;
+}
+
+/* Subtle grid pattern for empty states. */
+.grid-bg {
+  background-image:
+    linear-gradient(to right, rgba(255, 255, 255, 0.025) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(255, 255, 255, 0.025) 1px, transparent 1px);
+  background-size: 32px 32px;
+}

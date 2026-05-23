@@ -2,102 +2,89 @@
 
 Last updated: 2026-05-23
 
-## Phase 6 — Live executor + promotion gate ✅ (code complete, awaiting paper observation)
+## Phase 7a — Operator Dashboard ✅ (skeleton complete, awaiting local verification)
+
+Bloomberg-style web UI on top of the now-complete backend. Modern dark
+aesthetic, dense data layout, real-time updates via Server-Sent Events.
 
 ### Done
 
-**CLOB authed client** ([`ingestion/clob_client.py`](src/poly_meridian/ingestion/clob_client.py))
-- `_try_import_clob()` resolves `py_clob_client_v2` first, falls back to `py_clob_client`.
-- `init_authed()` brings up the authed client: tries L2 first, falls back to L1-derive on the fly with a warning to save derived creds to `.env`.
-- `_build_creds()` accommodates multiple shapes — library-version-tolerant.
+**Backend API extension** ([`src/poly_meridian/api/`](src/poly_meridian/api))
+- [`app.py`](src/poly_meridian/api/app.py) — FastAPI app: `/health`, `/api/state`, `/api/settings`, `/api/stream` (SSE), `/api/kill-switch/(en|dis)gage`. CORS enabled for the web service.
+- [`state.py`](src/poly_meridian/api/state.py) — `AgentStateBroker`: in-process pub/sub. Holds latest `Snapshot`, multiplexes events to SSE subscribers, decoupled from trading loop (slow dashboard never blocks orders).
+- Added `fastapi>=0.115` + `uvicorn[standard]>=0.32` to base deps.
+- [`main.py`](src/poly_meridian/main.py) — replaced stdlib `/health` handler with FastAPI via uvicorn. New `_broker_refresh_loop` pushes portfolio + kill-switch state every 5s.
 
-**LiveExecutor** ([`execution/live_executor.py`](src/poly_meridian/execution/live_executor.py))
-- `Executor(ABC)` impl with `mode = settings.mode` (live-conservative or live-normal).
-- **Hard safety:** constructor raises in paper mode.
-- `submit()` → posts via `py-clob-client`'s `create_order` + `post_order` (or market variant for FOK/FAK), wraps sync calls in `loop.run_in_executor`.
-- `_invoke()` tries multiple library method names for cross-version compatibility.
-- `cancel()` calls venue `cancel`/`cancel_order` on the venue-side ID.
-- `reconcile()` fallback path: if a tracked order is no longer in `get_orders()` → mark FILLED (real fills come via user-channel WS).
-- Fee schedule integration (same as PaperExecutor).
-- Graceful submit-error handling: any exception → `Order.status = REJECTED` + structured log, agent stays up.
+**Web app** ([`web/`](web))
+- **Next.js 15 + React 19 + TypeScript + Tailwind v3** scaffold (Next 15 still requires Tailwind v3 at the moment).
+- Bloomberg-inspired palette in [`tailwind.config.ts`](web/tailwind.config.ts):
+  - Background `#0a0a0b`, surface `#111114`, alt `#16161a`
+  - **Amber accent `#ff9e0a`** (signature)
+  - Status colors: green `#22c55e`, red `#ef4444`, yellow `#eab308`, cyan `#22d3ee`, purple `#a855f7`
+  - Geist Sans for UI, JetBrains Mono for all data
+- [`app/page.tsx`](web/app/page.tsx) — main dashboard, 2×3 panel grid, footer with hotkey hints
+- [`components/header-bar.tsx`](web/components/header-bar.tsx) — NAV, cash, daily P&L, exposure, open positions, markets watched, mode pill, connection status, kill-switch button
+- 6 panels, each with [`Panel`](web/components/panel.tsx) chrome (hotkey badge + title + subtitle + scrollable body):
+  - [`positions-table.tsx`](web/components/positions-table.tsx) — token, qty, avg cost, mark, P&L, notional
+  - [`signals-feed.tsx`](web/components/signals-feed.tsx) — time, strategy (color-coded), action, condition, edge
+  - [`orders-feed.tsx`](web/components/orders-feed.tsx) — time, strategy, side, price, size, status, mode
+  - [`smart-money-panel.tsx`](web/components/smart-money-panel.tsx) — tier badge, direction, cluster size, condition, net USD, recency
+  - [`strategies-panel.tsx`](web/components/strategies-panel.tsx) — per-strategy signal count + share bar; disabled strategies dimmed
+  - [`risk-panel.tsx`](web/components/risk-panel.tsx) — daily P&L vs cap, total exposure vs cap, open positions vs 50; color-graded meters
+- [`status-pill.tsx`](web/components/status-pill.tsx) — reusable status indicator with `ok|warn|alert|info|neutral` tones; alert variant blinks
+- Real-time data:
+  - [`hooks/use-agent-state.ts`](web/hooks/use-agent-state.ts) — initial REST fetch + SSE subscription; reducer-style updates for snapshot/signal/order/cluster/kill_switch events
+  - [`lib/api.ts`](web/lib/api.ts) — REST client (fetchState, engageKillSwitch, disengageKillSwitch, streamUrl)
+  - [`lib/types.ts`](web/lib/types.ts) — shared TS types matching backend Snapshot
+- Keyboard navigation: `1-6` jumps to panels (scroll into view), `K` toggles kill-switch (with confirm)
+- Tabular numerics + monospace data, subtle scrollbars, blinking alerts
+- Railway-ready: [`railway.json`](web/railway.json) for separate service deploy
 
-**User-channel WS** ([`ingestion/clob_user_ws.py`](src/poly_meridian/ingestion/clob_user_ws.py))
-- `ClobUserChannel(IngestionSource)` streams `wss://ws-subscriptions-clob.polymarket.com/ws/user`.
-- HMAC auth (api_key + secret + passphrase).
-- Dispatches `order`/`trade` events to caller callbacks → LiveExecutor wires these to its order book + ledger.
-- Exponential backoff reconnect (1/2/5/10/30s + jitter).
-- Graceful disable when API creds missing.
-
-**Promotion gate** ([`promotion.py`](src/poly_meridian/promotion.py))
-- **Real DB-backed checks (no more stubs):**
-  - `check_paper_history_age` — oldest `our_orders` row with mode='paper' ≥ N days
-  - `check_paper_metrics` — Sharpe + Max DD computed from `pnl_daily` series via `backtest.metrics.compute_all()`
-  - `check_initial_cap_ratio` — proposed live capital ≤ 5% of latest paper NAV
-  - `check_alerting` — Slack/Telegram webhook configured
-  - `check_drill(name)` — file-based confirmation (operator runs `poly-meridian mark-drill <name>`)
-- `mark_drill()` + `.promotion_flags/` directory (gitignored)
-- `run_gate()` runs all checks in one shot, returns `PromotionReport(passed, checks, render)`
-- **Fail-closed:** any unknown/erroring check → `passed=False`
-
-**CLI** ([`cli.py`](src/poly_meridian/cli.py))
-- `poly-meridian promote-to-live --proposed-live-usd 500 --min-paper-days 30` — runs the gate, exits 0/1
-- `poly-meridian mark-drill <name>` — flips a drill flag (kill_switch / reconnect / secrets / backup / legal)
-- Also: `run`, `status`, `backtest`, `walkforward`
-
-**Mode-aware executor selection** ([`main.py`](src/poly_meridian/main.py))
-- `_build_executor()` is the ONE place that branches paper vs live.
-- Starting NAV: $100K virtual in paper, $500 conservative in live.
-- All other wiring (strategies, risk, aggregator, pipeline) is mode-agnostic.
-
-**Scripts** ([`scripts/promote_to_live.py`](scripts/promote_to_live.py)) replaced — wraps real `promotion.run_gate()` with typer CLI.
-
-### Tests (2 new, 43 total)
-- `test_live_executor.py` — refuses paper mode; limit + market order paths; cancel; reconcile FILLED detection; submit-error → REJECTED (mocked CLOB throughout)
-- `test_promotion.py` — drill mark/check, paper history age (zero / sufficient), initial cap ratio (pass/fail), alerting (env-toggled), report render PASS/FAIL
-
-### Phase 6 acceptance gate
+### Phase 7a acceptance gate
 | Check | Status | Notes |
 |---|---|---|
-| LiveExecutor cannot start in paper mode | ✅ | Constructor raises; `test_live_executor_refuses_in_paper_mode` enforces |
-| Risk gate still enforced on live mode | ✅ | Pipeline unchanged; `RiskPolicy.evaluate` before `executor.submit` |
-| Promotion gate fails closed | ✅ | Any check error → `passed=False` |
-| Promotion gate checks are real, not stubs | ✅ | DB-backed paper_history_age + paper_metrics; alerting reads env; drills are flag files |
-| Mode-aware executor wired | ✅ | `_build_executor()` is the single branch point |
-| `make test` passes (43 test files) | ⏳ | All Phase 6 tests pure compute / async with mocks |
-| py-clob-client method names verified | ⚠️ | We try multiple method names per library version; operator should run `poly-meridian status` after `uv pip install -e ".[polymarket]"` to confirm authed init succeeds |
+| Backend has structured `/api/state` + SSE stream | ✅ | FastAPI mounted on prometheus_port (8000), broker decoupled from trading loop |
+| Risk gate still untouched | ✅ | Pipeline is mode/UI agnostic; UI is read-only + kill-switch toggle (which already exists in policy) |
+| UI bootstrap fetch + live SSE | ✅ | `use-agent-state.ts` handles both paths; replays last 50 events on subscribe |
+| Bloomberg-style design (dark / dense / amber / mono) | ✅ | Tailwind theme tokens + components honor the aesthetic |
+| Keyboard nav for power users | ✅ | 1-6 jumps panels, K toggles kill-switch |
+| `make test` passes (43 test files) | ⏳ | Web has no Python tests; backend Python tests unchanged |
+| `npm run dev` brings up the UI | ⏳ | Requires `cd web && npm install && npm run dev` (user-side) |
 
-### Operator next steps (THE actual go-live path)
-
-1. **Run paper observation 30+ days.**
-   - `make up` with `MODE=paper`
-   - Let it run continuously. Confirm `pm_signal_emitted_total`, `pm_order_submitted_total{mode="paper"}`, `pm_news_processed_total` grow on Grafana.
-2. **Run drills, mark each as done:**
+### Operator action items
+1. **Install Node.js** (≥18) if not already; install web deps:
    ```bash
-   docker compose run --rm agent python -m poly_meridian.cli mark-drill kill_switch
-   docker compose run --rm agent python -m poly_meridian.cli mark-drill reconnect
-   docker compose run --rm agent python -m poly_meridian.cli mark-drill secrets
-   docker compose run --rm agent python -m poly_meridian.cli mark-drill backup
-   docker compose run --rm agent python -m poly_meridian.cli mark-drill legal
+   cd web
+   npm install
+   cp .env.example .env.local
+   npm run dev      # → http://localhost:3001
    ```
-3. **Configure alerting:** set `SLACK_WEBHOOK_URL` (or `TELEGRAM_BOT_TOKEN`+`TELEGRAM_CHAT_ID`) in Railway env vars.
-4. **Run the gate when ready:**
-   ```bash
-   docker compose run --rm agent python -m poly_meridian.cli promote-to-live \
-       --proposed-live-usd 500 --min-paper-days 30
-   ```
-5. **If PASS:** flip `MODE=live-conservative` in Railway env, redeploy. Watch first 24h closely.
-6. **Scale-up plan** (§24 Phase 6): $500 → $5K (after 1 month positive) → $25K (after 6 months).
+2. **Run the agent** (`make up` or `python -m poly_meridian.main`). The UI auto-connects to `http://localhost:8000`. **Important:** the agent must be re-installed first (`uv pip install -e .`) so the new `fastapi` + `uvicorn` deps are picked up.
+3. **Deploy to Railway:**
+   - Create new service in the same Railway project.
+   - Root directory: `web/`.
+   - Env vars: `NEXT_PUBLIC_API_URL=https://<agent-service>.up.railway.app`.
+   - Railway picks up `web/railway.json`.
 
-### Backend complete — what's left
+### Deferred to Phase 7b/c
+- Interactive controls beyond kill-switch (strategy enable/disable, position close, drill toggles)
+- Charts (NAV equity curve, per-strategy P&L attribution) — Lightweight Charts or visx
+- Settings page (read/write `config/*.yaml`)
+- Light theme toggle (the brave can ask)
+- Auth (Phase 8 if multi-operator)
+- More dashboards: backtest report viewer, walk-forward fold browser, news feed
+
+## Overall progress
 
 | Phase | Durum |
 |---|---|
-| 0-5 | ✅ |
-| **6 Kademeli canlı** | ✅ **code-side done** — paper run → gate → live is now operator-driven |
-| **UI/UX (Bloomberg-style)** | 🔄 Sıradaki — proper visual interface |
+| 0-5b | ✅ backend complete |
+| 6 Live executor + promotion | ✅ code-side done |
+| **7a Operator Dashboard** | ✅ skeleton + 6 panels |
+| 7b Interactive controls + charts | 🔄 next iteration |
+| 7c Settings + multi-page | ⏳ later |
 
-## Open questions for user
-1. **py-clob-client install + verification** — `uv pip install -e ".[polymarket]"` includes it; run agent locally in paper mode and verify `clob.authed.init_ok` log line appears after setting `POLYMARKET_PRIVATE_KEY`.
-2. **Smart wallet seeds + leaderboard endpoint** — still pending from Phase 5a operator action items.
-3. **Paid data feeds for Fundamentals** — decide which categories you want live (Politics polls / Sports Elo / Crypto funding / Macro calendar).
-4. **UI scope** — when we get there: Bloomberg-style operator terminal. Stack candidates: Tauri+React / Textual TUI / Next.js. Wanted feature list?
+## Open questions
+1. **First UI test:** Want me to walk through bringing it up locally once you have Node installed?
+2. **Charts library preference:** Lightweight Charts (TradingView's) vs visx vs Tremor? Phase 7b decision.
+3. **Mobile layout:** today the grid collapses to single-column on small screens; do you want a proper mobile view in 7c?
