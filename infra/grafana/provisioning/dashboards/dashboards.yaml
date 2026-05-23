@@ -1,0 +1,10 @@
+apiVersion: 1
+providers:
+  - name: poly-meridian
+    folder: Poly Meridian
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /etc/grafana/provisioning/dashboards

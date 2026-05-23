@@ -133,6 +133,7 @@ class AggregatedSignal(BaseModel):
     edge: float
     conviction: float
     size_pct: float               # fraction of bankroll proposed
+    proposed_price: Decimal | None = None  # price the strategy wants to trade at
     category: str | None = None
     market_liquidity_usd: float | None = None
     contributors: list[str] = Field(default_factory=list)

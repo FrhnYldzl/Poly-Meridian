@@ -59,6 +59,8 @@ services:
     volumes:
       - grafana_data:/var/lib/grafana
       - ./infra/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./infra/grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards/_provider:ro
+      - ./infra/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
 
 volumes:
   pgdata:

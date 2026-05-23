@@ -1,0 +1,29 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "agent",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "poly_meridian.main"],
+      "port": 8000
+    },
+    {
+      "name": "docker-stack",
+      "runtimeExecutable": "docker",
+      "runtimeArgs": ["compose", "up"],
+      "port": 8000
+    },
+    {
+      "name": "grafana",
+      "runtimeExecutable": "docker",
+      "runtimeArgs": ["compose", "up", "grafana", "db", "redis"],
+      "port": 3000
+    },
+    {
+      "name": "prometheus",
+      "runtimeExecutable": "docker",
+      "runtimeArgs": ["compose", "up", "prometheus", "agent", "db", "redis"],
+      "port": 9090
+    }
+  ]
+}

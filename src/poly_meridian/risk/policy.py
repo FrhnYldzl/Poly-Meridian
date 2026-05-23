@@ -1,15 +1,46 @@
-"""RiskPolicy ABC. See MASTER_SPEC §15.4.
+"""RiskPolicy — ABC + concrete `DefaultRiskPolicy`. MASTER_SPEC §15.4.
 
 Every aggregated signal MUST pass through `RiskPolicy.evaluate()` before
-reaching the executor. There is no bypass — this is enforced by the agent
-main loop wiring, not by convention.
+reaching the executor. There is no bypass — this is enforced by main loop
+wiring, not by convention.
+
+Design contract:
+  - Strategies propose `size_pct` + `proposed_price` on AggregatedSignal.
+  - Policy validates limits and may REDUCE the size, but NEVER inflates it.
+  - Kelly sizing is a *tool* strategies use to set their proposal;
+    `risk/kelly.py::sized_kelly` is exported for that purpose.
+  - `policy.size()` converts an APPROVE/REDUCE decision into a TradeDecision.
 """
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from datetime import datetime
+from decimal import Decimal
 from enum import StrEnum
 
-from poly_meridian.domain import AggregatedSignal, PortfolioSnapshot, TradeDecision
+import structlog
+
+from poly_meridian.domain import (
+    Action,
+    AggregatedSignal,
+    OrderType,
+    PortfolioSnapshot,
+    Side,
+    TradeDecision,
+)
+from poly_meridian.risk.kill_switch import KillSwitch
+from poly_meridian.risk.limits import (
+    RiskLimits,
+    check_category_exposure,
+    check_daily_loss,
+    check_market_liquidity,
+    check_open_position_count,
+    check_position_size_cap,
+    check_total_exposure,
+    reduce_size_if_breached,
+)
+
+log = structlog.get_logger("poly_meridian.risk.policy")
 
 
 class RiskDecision(StrEnum):
@@ -19,7 +50,7 @@ class RiskDecision(StrEnum):
 
 
 class RiskPolicy(ABC):
-    """Contract for the risk gate that sits between aggregator and executor."""
+    """Contract for the risk gate between aggregator and executor."""
 
     @abstractmethod
     def evaluate(
@@ -40,3 +71,150 @@ class RiskPolicy(ABC):
     @abstractmethod
     def is_kill_switch_engaged(self) -> bool:
         """Return True if the kill-switch blocks all new orders."""
+
+
+class DefaultRiskPolicy(RiskPolicy):
+    """Phase 2 reference implementation:
+
+    1. Observe portfolio daily P&L → may engage kill-switch
+    2. If kill-switch engaged → REJECT
+    3. Run blocking checks (liquidity, daily loss, open count) → REJECT
+    4. Run sizing checks (position cap, total expo, category expo) →
+       REDUCE if positive headroom, REJECT if zero
+    5. APPROVE otherwise
+    """
+
+    def __init__(
+        self,
+        *,
+        strategy_name: str,
+        limits: RiskLimits | None = None,
+        kill_switch: KillSwitch | None = None,
+    ) -> None:
+        self.strategy_name = strategy_name
+        self.limits = limits or RiskLimits()
+        self.kill_switch = kill_switch or KillSwitch()
+        # condition_id -> reduced size_pct, set during evaluate(), consumed by size()
+        self._reduced_size_pct: dict[str, float] = {}
+
+    def is_kill_switch_engaged(self) -> bool:
+        return self.kill_switch.engaged
+
+    def evaluate(
+        self,
+        signal: AggregatedSignal,
+        portfolio: PortfolioSnapshot,
+    ) -> RiskDecision:
+        self.kill_switch.observe_daily_pnl(portfolio.daily_pnl_pct)
+
+        if self.kill_switch.engaged:
+            return self._reject(
+                signal, "kill_switch_engaged", reason=str(self.kill_switch.reason)
+            )
+
+        if signal.direction not in (Action.BUY_YES, Action.BUY_NO):
+            # Phase 2: only BUY signals open new positions through this path.
+            # SELL/EXIT/HOLD bypass to a portfolio rebalancer (Phase 4+).
+            return self._reject(
+                signal, "non_buy_direction", direction=str(signal.direction)
+            )
+
+        if signal.proposed_price is None or signal.proposed_price <= 0:
+            return self._reject(signal, "missing_or_invalid_proposed_price")
+
+        # Hard blocks
+        for reason in (
+            check_daily_loss(portfolio, self.limits),
+            check_open_position_count(portfolio, self.limits),
+            check_market_liquidity(signal, self.limits),
+        ):
+            if reason:
+                return self._reject(signal, reason)
+
+        # Position-size cap: hard reject if WAY over (>1.5x the cap),
+        # reduce otherwise. Lets strategies be slightly aggressive without
+        # immediately rejecting marginal proposals.
+        size_reason = check_position_size_cap(signal, self.limits)
+        if size_reason and signal.size_pct > self.limits.max_position_pct_of_bankroll * 1.5:
+            return self._reject(signal, size_reason)
+
+        # Reducible breaches
+        for reason in (
+            check_total_exposure(signal, portfolio, self.limits),
+            check_category_exposure(signal, portfolio, self.limits),
+        ):
+            if reason:
+                reduced = reduce_size_if_breached(signal, portfolio, self.limits)
+                if reduced is None or reduced <= 0:
+                    return self._reject(signal, reason)
+                self._reduced_size_pct[signal.condition_id] = reduced
+                log.info(
+                    "risk.reduce",
+                    strategy=self.strategy_name,
+                    condition_id=signal.condition_id,
+                    original=signal.size_pct,
+                    reduced=reduced,
+                    cause=reason,
+                )
+                return RiskDecision.REDUCE
+
+        if size_reason:
+            self._reduced_size_pct[signal.condition_id] = (
+                self.limits.max_position_pct_of_bankroll
+            )
+            log.info(
+                "risk.reduce.size_cap",
+                strategy=self.strategy_name,
+                condition_id=signal.condition_id,
+                cap=self.limits.max_position_pct_of_bankroll,
+            )
+            return RiskDecision.REDUCE
+
+        return RiskDecision.APPROVE
+
+    def size(
+        self,
+        signal: AggregatedSignal,
+        portfolio: PortfolioSnapshot,
+    ) -> TradeDecision | None:
+        """Convert an APPROVE/REDUCE signal into a TradeDecision.
+
+        Does NOT recompute Kelly — the strategy was responsible for setting
+        `size_pct` and `proposed_price`. We just enforce the cap.
+        """
+        if signal.proposed_price is None or signal.proposed_price <= 0:
+            return None
+
+        size_pct = self._reduced_size_pct.pop(signal.condition_id, signal.size_pct)
+        size_pct = min(size_pct, self.limits.max_position_pct_of_bankroll)
+        if size_pct <= 0:
+            return None
+
+        size_usd = (portfolio.nav_usd * Decimal(str(size_pct))).quantize(Decimal("0.01"))
+        if size_usd <= Decimal("0.01"):
+            return None
+
+        price = signal.proposed_price
+        size_units = (size_usd / price).quantize(Decimal("0.01"))
+        if size_units <= 0:
+            return None
+
+        return TradeDecision(
+            ts=signal.ts,
+            strategy=self.strategy_name,
+            token_id=signal.token_id,
+            side=Side.BUY,
+            order_type=OrderType.GTC,
+            price=price,
+            size=size_units,
+        )
+
+    def _reject(self, signal: AggregatedSignal, reason: str, **kw: object) -> RiskDecision:
+        log.warning(
+            "risk.reject",
+            strategy=self.strategy_name,
+            condition_id=signal.condition_id,
+            reason=reason,
+            **kw,
+        )
+        return RiskDecision.REJECT
