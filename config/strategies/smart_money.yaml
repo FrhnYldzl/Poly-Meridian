@@ -1,11 +1,31 @@
-# SmartMoneyStrategy — see MASTER_SPEC §14.3.
+# SmartMoneyStrategy v2 (3-tier) — see MASTER_SPEC v1.1 §14.3.
 
 enabled: true
-min_wallet_count: 3
+
+# Cluster thresholds (mandatory filter)
+tier1_min_cluster: 3        # ≥3 Tier 1 wallets same direction → auto-trade full
+tier2_min_cluster: 2        # ≥2 Tier 2 wallets same direction → auto-trade half
+tier3_auto_trade: false     # Tier 3 surfaces in dashboard only; operator manual approval
+
+# Per-wallet flow filters
 min_net_usd_per_wallet: 5000
-window_sec: 3600
-freshness_max_sec: 86400
-max_size_pct: 0.025
-smart_wallet_min_pnl_usd: 50000
-smart_wallet_min_win_rate: 0.55
-smart_wallet_min_trades: 100
+latency_decay_sec: 1800     # events older than 30min don't count toward cluster
+freshness_max_sec: 86400    # overall 24h window
+
+# Position size caps (fraction of bankroll, per copy-trade)
+max_size_pct_tier1: 0.02    # Kelly × 1.0 (regular)
+max_size_pct_tier2: 0.01    # Kelly × 0.5
+max_size_pct_tier3: 0.005   # Kelly × 0.25 — only used if tier3_auto_trade=true
+
+# Portfolio concentration
+per_trader_cap_pct: 0.05    # max 5% of portfolio from a single trader
+
+# Legacy tier-promotion thresholds (used by leaderboard_provider.classify_tier)
+tier_thresholds:
+  tier1_lifetime_pnl_usd: 500000
+  tier1_win_rate: 0.55
+  tier1_trade_count: 200
+  tier1_active_days_min: 90
+  tier1_drawdown_7d_max: 0.20
+  tier2_last_30d_pnl_usd: 50000
+  tier2_last_30d_win_rate: 0.52

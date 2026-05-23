@@ -125,8 +125,17 @@ CREATE TABLE IF NOT EXISTS smart_wallets (
     lifetime_pnl    NUMERIC,
     win_rate        NUMERIC,
     trade_count     INT,
-    last_updated    TIMESTAMPTZ
+    last_updated    TIMESTAMPTZ,
+    -- v1.1: 3-tier follow-on (MASTER_SPEC §14.3)
+    tier            INT NOT NULL DEFAULT 3 CHECK (tier IN (1, 2, 3)),
+    category_focus  TEXT,
+    last_7d_pnl     NUMERIC,
+    recency_score   NUMERIC NOT NULL DEFAULT 0,
+    hedge_flag      BOOLEAN NOT NULL DEFAULT FALSE,
+    drawdown_7d_pct NUMERIC
 );
+CREATE INDEX IF NOT EXISTS idx_smart_wallets_tier ON smart_wallets(tier, last_updated DESC);
+CREATE INDEX IF NOT EXISTS idx_smart_wallets_category ON smart_wallets(category_focus);
 
 -- ============================================================================
 -- feature_snapshots — per-tick feature vectors

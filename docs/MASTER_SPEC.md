@@ -1,8 +1,9 @@
 # POLY MERIDIAN — Polymarket Quant Agent Master Documentation
 
-> **Sürüm:** 1.0 · **Tarih:** Mayıs 2026 · **Dil:** Türkçe (kod ve API referansları İngilizce)
+> **Sürüm:** 1.1 · **Tarih:** Mayıs 2026 · **Dil:** Türkçe (kod ve API referansları İngilizce)
 > **Hedef okuyucu:** (1) Fonu yöneten ekip — eğitim ve karar dokümanı olarak; (2) Claude Code — agent'ı sıfırdan inşa etmek için teknik spec olarak.
 > **Stratejik karar matrisi (seçildi):** Çok-stratejili hibrit · Kategori-agnostik · Python + Docker + kendi sunucumuz · Paper trading → kademeli canlı.
+> **Sürüm tarihçesi:** [`docs/CHANGELOG.md`](CHANGELOG.md) — her bump'ın değişen bölüm listesi.
 
 ---
 
@@ -677,6 +678,33 @@ Sources: [GDELT - Best News API Alternative](https://dataresearchtools.com/gdelt
 
 **Tooling:** `web3.py`, opsiyonel `subgraph` (The Graph) sorguları.
 
+### 11.7 Leaderboard provider (v1.1)
+**Amaç:** Polymarket'in kendi leaderboard'undan top trader listesi + metadata çekmek, `smart_wallets` tablosunu güncel tutmak.
+
+**Sources (denendiği sırayla):**
+1. `https://data-api.polymarket.com/leaderboard` veya benzeri public data endpoint (önerilen yol)
+2. Network tab inspection ile keşfedilen private API endpoint
+3. HTML fallback: `https://polymarket.com/leaderboard/{category}/{period}/{sort}` — React SPA olduğu için Playwright ile render
+
+**Polling:** Günde 1x cron job (yeterli; leaderboard saatte hareket etmiyor).
+
+**Metadata çekilen alanlar:**
+- Cüzdan adresi (0x...)
+- Display name (varsa)
+- Lifetime PnL, win rate, trade count
+- Son 7d PnL, son 7d drawdown
+- Aktivite freshness (son trade ne zaman)
+- Kategori odağı (lifetime hacminin %X'i hangi kategoride)
+
+**Tier ataması (cron task içinde):**
+- Tier 1 koşulları sağlanıyorsa → tier=1
+- Tier 2 koşulları → tier=2
+- Aksi halde tier=3
+
+**Tooling:** `httpx` async client, opsiyonel `playwright` HTML fallback için.
+
+**Risk uyarısı:** Leaderboard rakamları **survivorship bias** içerir. Sadece kazananlar görünür; aynı kişi gelecekte iflas edebilir. Bu yüzden tier ataması "gözlem altında" (Tier 3) varsayılan davranıştır — promotion ancak 90+ gün tutarlı performansla olur.
+
 ---
 
 ## 12. Veritabanı şeması
@@ -760,14 +788,21 @@ CREATE TABLE news_signals (
     direction       TEXT NOT NULL CHECK (direction IN ('YES','NO','NEUTRAL'))
 );
 
--- Smart money cüzdanları
+-- Smart money cüzdanları (v1.1: 3-tier + recency_score + hedge_flag)
 CREATE TABLE smart_wallets (
     address         TEXT PRIMARY KEY,
     label           TEXT,
     lifetime_pnl    NUMERIC,
     win_rate        NUMERIC,
     trade_count     INT,
-    last_updated    TIMESTAMPTZ
+    last_updated    TIMESTAMPTZ,
+    -- v1.1 columns
+    tier            INT NOT NULL DEFAULT 3 CHECK (tier IN (1, 2, 3)),
+    category_focus  TEXT,                       -- 'Politics' | 'Crypto' | 'Sports' | 'Mixed' | NULL
+    last_7d_pnl     NUMERIC,
+    recency_score   NUMERIC DEFAULT 0,          -- 0..1 — son aktivite freshness'ı
+    hedge_flag      BOOLEAN NOT NULL DEFAULT FALSE,  -- biliniyorsa: cüzdan hedge-trader (raw signal'ı düşür)
+    drawdown_7d_pct NUMERIC                     -- son 7 günlük drawdown, loss filter için
 );
 
 -- Feature snapshots (her tickte hesaplanan, ML feature seti)
@@ -906,10 +941,48 @@ class BaseStrategy(ABC):
 
 **Aksiyon:** Yönlü pozisyon (BUY_YES veya BUY_NO).
 
-### 14.3 SmartMoneyStrategy
-**Tetik:** Son 1 saatte en az 3 farklı smart wallet aynı yöne >$5K net pozisyon almışsa.
-**Conviction:** Cluster büyüklüğü × ortalama smart wallet historical edge.
-**Pencere:** Max 24 saat (taze sinyal).
+### 14.3 SmartMoneyStrategy — 3-tier (v1.1)
+**Tetik mantığı 3 tier'a bölündü.** Survivorship bias + adverse selection + reflexivity riskleri için her tier ayrı eşik + ayrı pozisyon ağırlığı.
+
+#### Tier 1 — Kanıtlanmış (auto-trade, full weight)
+- Lifetime PnL > $500K
+- Win rate > %55
+- Trade count > 200
+- Aktif >90 gün
+- Son 7 günde -%20 drawdown YOK
+- Cluster: ≥3 farklı Tier 1 cüzdan aynı yöne, her biri ≥$5K net buy, son 30dk
+- Position weight: Kelly × 1.0 (normal)
+
+#### Tier 2 — Sıcak ama tedbirli (auto-trade, half weight)
+- Son 30 gün PnL > +$50K
+- Son 30 gün win rate > %52
+- Cluster: ≥2 Tier 2 cüzdan aynı yöne, son 30dk
+- Position weight: Kelly × 0.5
+
+#### Tier 3 — Yeni keşif (DASHBOARD ONLY, default no auto-trade)
+- Son 7 günde leaderboard'a ilk girenler (yüksek volatility, gözlem altında)
+- Surfacing yapılır, operatör manuel onay verirse pozisyon açılır
+- Position weight: Kelly × 0 (default), config ile aktive edilirse × 0.25
+
+#### Zorunlu filtreler (tüm tier'lar için)
+- **Latency decay:** Cüzdan işlemini 30dk+ sonra görüyorsak pas (fiyat zaten kaçtı)
+- **Cluster confirmation:** Tek whale takibi YASAK
+- **Position size cap:** Copy-trade max bankroll %2'si (regular Kelly'nin yarısı, §15.1)
+- **Per-trader concentration cap:** Tek trader'dan max %5 portfolio exposure
+- **Hedge kontrolü:** İlişkili marketlerde ters pozisyon var mı? Varsa sinyal düşürülür
+- **Loss filter:** Cüzdan son 7 günde -%20 drawdown'daysa dışla
+- **Attribution log:** Her copy-trade `Order.rationale` içinde `copied_from={tier}_{wallet}` notu
+
+#### Veri kaynakları (çift-feed redundancy)
+- **Primary:** `ingestion/onchain_provider.py` — Polygon RPC, real-time CTF transfer events
+- **Secondary:** `ingestion/leaderboard_provider.py` — Polymarket leaderboard API/HTML polling, günde 1x cüzdan listesi + metadata güncellemesi
+- **Cluster builder:** Background task, on-chain queue'sundan event tüketir, per-`condition_id` `ClusterState` hesaplar, `SmartMoneyStrategy.attach_cluster_state()` çağırır
+
+#### Pencere
+Max 24 saat freshness, ama latency decay 30dk eşiğiyle ön-filtre.
+
+#### Exit signal tracking
+Tier 1 whale bizim açtığımız pozisyonu kapatıyorsa: `exit_pressure` sinyali aggregator'a, portfolio rebalancer (§17) bu sinyali tetikleyici olarak kullanır.
 
 ### 14.4 StatQuantStrategy
 **Alt sinyaller (her biri ayrı strateji olarak da ele alınabilir):**
