@@ -45,6 +45,10 @@ class Settings(BaseSettings):
     # --- LLM ---
     openai_api_key: SecretStr = Field(default=SecretStr(""))
     anthropic_api_key: SecretStr = Field(default=SecretStr(""))
+    embedding_model: str = "text-embedding-3-small"   # OpenAI, 1536-d
+    sentiment_model: str = "claude-haiku-4-5-20251001"
+    sentiment_batch_size: int = 10
+    sentiment_window_sec: int = 1800
 
     # --- Storage ---
     postgres_url: str = "postgresql+asyncpg://poly:polypass@db:5432/poly_meridian"

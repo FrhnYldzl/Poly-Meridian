@@ -1,6 +1,8 @@
 # SentimentStrategy — see MASTER_SPEC §14.2.
 
-enabled: false                       # turns on in Phase 3
+enabled: true
 window_sec: 1800                     # last 30 min of news + tweets
 impact_threshold: 0.6
+min_signals: 1
+max_size_pct: 0.03
 conviction_formula: "impact * abs(sentiment)"

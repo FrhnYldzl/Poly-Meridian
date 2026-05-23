@@ -28,7 +28,9 @@ features:
 strategies:
   enabled:
     - arbitrage
-    # sentiment, smart_money, stat_quant, fundamentals — wired in later phases
+    - sentiment
+    - smart_money
+    # stat_quant, fundamentals — wired in later phases
 
 aggregator:
   conflict_threshold: 0.10

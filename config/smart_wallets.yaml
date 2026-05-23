@@ -1,0 +1,20 @@
+# Smart-wallet seed list — top Polymarket traders (placeholder addresses).
+#
+# These are illustrative slots. Before Phase 6 live deployment, populate with
+# actual top-leaderboard addresses from polymarket.com/leaderboard. The
+# format: lowercase hex, 0x-prefixed.
+#
+# The SmartMoneyStrategy will load these via `ingestion/onchain_provider.py`
+# and watch for net buy/sell clusters across the set.
+
+wallets:
+  # Example slots — fill in real addresses.
+  # - "0x0000000000000000000000000000000000000001"
+  # - "0x0000000000000000000000000000000000000002"
+
+# Per-wallet metadata (optional; used by leaderboard scrapers later).
+metadata:
+  # "0x0000...0001":
+  #   label: "French Whale"
+  #   lifetime_pnl: 85000000
+  #   trade_count: 4

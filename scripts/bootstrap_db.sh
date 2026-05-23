@@ -84,10 +84,23 @@ CREATE TABLE IF NOT EXISTS news_articles (
     title           TEXT,
     body            TEXT,
     url             TEXT,
-    embedding       VECTOR(768),
+    embedding       VECTOR(1536),
     processed       BOOLEAN NOT NULL DEFAULT FALSE
 );
 CREATE INDEX IF NOT EXISTS idx_news_ts ON news_articles(ts DESC);
+-- HNSW index on embedding for fast cosine-similarity search.
+CREATE INDEX IF NOT EXISTS idx_news_embedding_cos ON news_articles
+    USING hnsw (embedding vector_cosine_ops);
+
+-- Per-market embedding cache so we don't recompute every poll.
+CREATE TABLE IF NOT EXISTS market_embeddings (
+    condition_id    TEXT PRIMARY KEY REFERENCES markets(condition_id),
+    embedding       VECTOR(1536) NOT NULL,
+    text_hash       TEXT NOT NULL,         -- hash of question we embedded
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_market_emb_cos ON market_embeddings
+    USING hnsw (embedding vector_cosine_ops);
 
 -- ============================================================================
 -- news_signals — article → market mapping with sentiment/impact
