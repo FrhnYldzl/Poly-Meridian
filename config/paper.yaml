@@ -1,0 +1,12 @@
+# Paper-mode overlay. Inherits from base.yaml.
+# See MASTER_SPEC §19.
+
+mode: paper
+
+paper:
+  starting_nav_usd: 100000   # virtual capital for paper run
+  realistic_latency_ms: [50, 500]
+
+execution:
+  # In paper, fills are simulated against the local book replica.
+  use_local_book: true

@@ -1,0 +1,9 @@
+# Live-mode overlay. Only entered via scripts/promote_to_live.py checklist.
+# See MASTER_SPEC §19 + §15.
+
+mode: live-conservative
+
+live:
+  starting_nav_usd_max: 500     # initial live cap, scaled up per §24 Phase 6
+  per_trade_usd_cap: 50
+  per_day_usd_cap: 200

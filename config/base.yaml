@@ -1,0 +1,41 @@
+# Poly Meridian — base config (all defaults).
+# Overlayed by paper.yaml / live.yaml depending on MODE.
+# See MASTER_SPEC §21.
+
+agent:
+  loop_interval_sec: 5
+  health_port: 8000
+
+ingestion:
+  gamma:
+    poll_active_markets_sec: 300
+    poll_new_markets_sec: 60
+  clob_ws:
+    heartbeat_sec: 10
+    reconnect_backoff_sec: [1, 2, 5, 10, 30]
+  news:
+    provider: gdelt
+    poll_sec: 900
+  twitter:
+    enabled: false
+  onchain:
+    enabled: false
+
+features:
+  tick_sec: 5
+  rolling_windows_sec: [3600, 86400]
+
+strategies:
+  enabled:
+    - arbitrage
+    # sentiment, smart_money, stat_quant, fundamentals — wired in later phases
+
+aggregator:
+  conflict_threshold: 0.10
+
+execution:
+  maker_first: true
+  maker_timeout_sec: 60
+  partial_taker_fill_pct: 0.5
+  max_slippage_bps: 50
+  cancel_on_disconnect: true

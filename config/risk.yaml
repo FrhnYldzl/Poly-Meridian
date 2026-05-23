@@ -1,0 +1,20 @@
+# Risk engine config. See MASTER_SPEC §15.
+
+risk:
+  kelly_fraction: 0.25                       # quarter Kelly
+  max_position_pct_of_bankroll: 0.05         # hard cap per position
+  max_exposure_per_category_pct: 0.30
+  max_total_exposure_pct: 0.80               # always keep >=20% cash
+  daily_max_loss_pct: 0.05
+  weekly_max_loss_pct: 0.10
+  max_concentration_single_event_pct: 0.10
+  max_open_positions: 50
+  min_market_liquidity_usd: 10000
+  max_position_pct_of_market_volume: 0.05    # market-impact guardrail
+
+kill_switch:
+  daily_loss_trigger_pct: 0.05
+  abnormal_slippage_bps: 200
+  api_error_rate_threshold: 0.05
+  websocket_disconnect_grace_sec: 60
+  manual_override_enabled: true

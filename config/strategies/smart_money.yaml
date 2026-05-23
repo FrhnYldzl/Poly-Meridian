@@ -1,0 +1,10 @@
+# SmartMoneyStrategy — see MASTER_SPEC §14.3.
+
+enabled: false                       # turns on in Phase 3
+min_wallet_count: 3
+min_net_usd_per_wallet: 5000
+window_sec: 3600
+freshness_max_sec: 86400
+smart_wallet_min_pnl_usd: 50000
+smart_wallet_min_win_rate: 0.55
+smart_wallet_min_trades: 100

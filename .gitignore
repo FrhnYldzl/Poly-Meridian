@@ -1,0 +1,54 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+.eggs/
+build/
+dist/
+
+# Virtual envs
+.venv/
+venv/
+env/
+.python-version
+
+# Caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.tox/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Logs
+logs/
+*.log
+
+# Secrets — NEVER commit
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+
+# DB dumps
+*.sql.gz
+*.dump
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Local data
+data/
+*.parquet
+*.feather
+
+# OS
+Thumbs.db

@@ -1,0 +1,65 @@
+services:
+  db:
+    image: timescale/timescaledb-ha:pg16
+    environment:
+      POSTGRES_USER: poly
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-polypass}
+      POSTGRES_DB: poly_meridian
+    volumes:
+      - pgdata:/home/postgres/pgdata/data
+      - ./scripts/bootstrap_db.sh:/docker-entrypoint-initdb.d/00_bootstrap.sh:ro
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U poly -d poly_meridian"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  agent:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      MODE: ${MODE:-paper}
+      POSTGRES_URL: postgresql+asyncpg://poly:${POSTGRES_PASSWORD:-polypass}@db:5432/poly_meridian
+      REDIS_URL: redis://redis:6379/0
+    volumes:
+      - ./config:/app/config:ro
+      - ./logs:/app/logs
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:latest
+    volumes:
+      - ./infra/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./infra/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+
+volumes:
+  pgdata:
+  grafana_data:

@@ -1,0 +1,29 @@
+# Normalize line endings — repo stores LF, Windows checkouts can have CRLF.
+# Shell + Python + config files MUST be LF (Linux containers choke on CRLF).
+* text=auto eol=lf
+
+*.sh   text eol=lf
+*.py   text eol=lf
+*.yaml text eol=lf
+*.yml  text eol=lf
+*.toml text eol=lf
+*.json text eol=lf
+*.md   text eol=lf
+*.cfg  text eol=lf
+*.ini  text eol=lf
+Dockerfile text eol=lf
+Makefile   text eol=lf
+
+# Windows-native artifacts (none today, kept for future).
+*.bat  text eol=crlf
+*.ps1  text eol=crlf
+
+# Binary — leave alone.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.parquet binary
+*.feather binary

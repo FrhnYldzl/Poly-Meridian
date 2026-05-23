@@ -1,0 +1,8 @@
+# ArbitrageStrategy — see MASTER_SPEC §14.1.
+
+enabled: true
+imbalance_threshold: 0.015          # |YES_ask + NO_ask - 1.00| trigger
+event_set_threshold: 0.02
+maker_first: true
+conviction_default: 0.95
+min_edge_after_fees_bps: 30

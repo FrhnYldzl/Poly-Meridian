@@ -1,0 +1,18 @@
+# FundamentalsStrategy — see MASTER_SPEC §14.5.
+
+enabled: false                       # turns on in Phase 5
+
+categories:
+  politics:
+    enabled: true
+    poll_aggregator: "538-style"
+    poll_bias_correction: true
+  sports:
+    enabled: true
+    elo_k_factor: 32
+  crypto:
+    enabled: true
+    use_funding_rate: true
+    use_exchange_netflow: true
+  macro:
+    enabled: false
