@@ -87,6 +87,10 @@ class Pipeline:
         if self.smart_money is not None:
             self.smart_money.attach_book(token_id, book)
         self.executor.attach_book(token_id, book)
+        # Propagate category for fee schedule.
+        cat = self.token_to_category.get(token_id)
+        if cat is not None:
+            self.executor.attach_category(token_id, cat)
 
     def register_market(self, market: Market) -> None:
         self.arbitrage.register_pair(
@@ -95,6 +99,8 @@ class Pipeline:
         if market.category:
             self.token_to_category[market.yes_token_id] = market.category
             self.token_to_category[market.no_token_id] = market.category
+            self.executor.attach_category(market.yes_token_id, market.category)
+            self.executor.attach_category(market.no_token_id, market.category)
 
     def attach_news_signals(self, condition_id: str, signals: list[dict[str, Any]]) -> None:
         if self.sentiment is not None:
@@ -160,15 +166,27 @@ class Pipeline:
         PM_ORDER_SUBMITTED.labels(side=str(order.side), mode=str(order.mode)).inc()
         return order
 
-    async def on_fill(self, order: Order) -> None:
-        if order.avg_fill_price is None or order.filled_size <= 0:
-            return
+    async def on_fill(
+        self,
+        order: Order,
+        filled_qty: Decimal | None = None,
+        fill_price: Decimal | None = None,
+        fee: Decimal | None = None,
+    ) -> None:
+        # Fee-aware path (PaperExecutor passes filled qty/price/fee per fill).
+        if filled_qty is None or fill_price is None:
+            # Backwards-compat: caller didn't pass per-fill detail.
+            if order.avg_fill_price is None or order.filled_size <= 0:
+                return
+            filled_qty = order.filled_size
+            fill_price = order.avg_fill_price
+            fee = fee or Decimal(0)
         self.ledger.apply_fill(
             ts=order.ts_filled or datetime.now(UTC),
             order=order,
-            filled_qty=order.filled_size,
-            fill_price=order.avg_fill_price,
-            fee=Decimal(0),
+            filled_qty=filled_qty,
+            fill_price=fill_price,
+            fee=fee or Decimal(0),
         )
 
     def context_metrics(self) -> dict[str, Any]:

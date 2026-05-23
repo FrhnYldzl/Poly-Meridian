@@ -8,6 +8,7 @@ from poly_meridian.strategies.smart_money import (
     SmartMoneyStrategy,
     WalletFlow,
 )
+from poly_meridian.strategies.stat_quant import StatQuantStrategy
 
 __all__ = [
     "ArbitrageStrategy",
@@ -16,5 +17,6 @@ __all__ = [
     "SentimentStrategy",
     "SignalAggregator",
     "SmartMoneyStrategy",
+    "StatQuantStrategy",
     "WalletFlow",
 ]

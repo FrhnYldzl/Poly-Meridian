@@ -1,15 +1,24 @@
 # StatQuantStrategy — see MASTER_SPEC §14.4.
 
-enabled: false                       # turns on in Phase 4
+enabled: true
 
 mean_reversion:
   zscore_threshold: 2.0
-  lookback_sec: 3600
+  min_window: 10
+  max_size_pct: 0.02
+
 momentum:
-  lookback_sec: 21600                # 6h
-  vol_confirm: true
+  lookback_window: 20
+  return_threshold: 0.05
+  min_volume: 0.0
+  max_size_pct: 0.02
+
 vol_breakout:
-  consolidation_max_vol: 0.02
+  low_vol_threshold: 0.005
   breakout_multiplier: 2.0
+  max_size_pct: 0.02
+
 time_decay:
-  resolution_horizon_hours_max: 24
+  horizon_hours_max: 24.0
+  price_deviation_threshold: 0.10
+  max_size_pct: 0.015

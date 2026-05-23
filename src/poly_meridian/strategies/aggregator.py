@@ -27,6 +27,7 @@ from poly_meridian.domain import Action, AggregatedSignal, Market, StrategySigna
 from poly_meridian.strategies.arbitrage import ArbitrageStrategy
 from poly_meridian.strategies.sentiment import SentimentStrategy
 from poly_meridian.strategies.smart_money import SmartMoneyStrategy
+from poly_meridian.strategies.stat_quant import StatQuantStrategy
 
 log = structlog.get_logger("poly_meridian.aggregator")
 
@@ -37,12 +38,20 @@ _PRICE_HELPERS: dict[str, Callable[[dict[str, Any]], Decimal]] = {
     "arbitrage":   ArbitrageStrategy.proposed_price_from_signal,
     "sentiment":   SentimentStrategy.proposed_price_from_signal,
     "smart_money": SmartMoneyStrategy.proposed_price_from_signal,
+    "stat_quant":  StatQuantStrategy.proposed_price_from_signal,
 }
 _SIZE_HELPERS: dict[str, Callable[[dict[str, Any], Decimal, float], float]] = {
     "arbitrage":   ArbitrageStrategy.proposed_size_pct,
     "sentiment":   SentimentStrategy.proposed_size_pct,
     "smart_money": SmartMoneyStrategy.proposed_size_pct,
+    "stat_quant":  StatQuantStrategy.proposed_size_pct,
 }
+
+
+def _resolve_helper(strategy_name: str, table: dict[str, Any]) -> Any:
+    """StatQuant emits as `stat_quant.<sub>` — resolve by prefix."""
+    base = strategy_name.split(".", 1)[0]
+    return table.get(base)
 
 
 class SignalAggregator:
@@ -86,8 +95,8 @@ class SignalAggregator:
             contributors.append(s.strategy)
             direction_token.setdefault(s.suggested_action, s.token_id)
 
-            price_helper = _PRICE_HELPERS.get(s.strategy)
-            size_helper = _SIZE_HELPERS.get(s.strategy)
+            price_helper = _resolve_helper(s.strategy, _PRICE_HELPERS)
+            size_helper = _resolve_helper(s.strategy, _SIZE_HELPERS)
             if price_helper is not None:
                 prices.append(price_helper(s.rationale))
             if size_helper is not None:

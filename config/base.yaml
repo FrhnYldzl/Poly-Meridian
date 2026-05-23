@@ -30,7 +30,8 @@ strategies:
     - arbitrage
     - sentiment
     - smart_money
-    # stat_quant, fundamentals — wired in later phases
+    - stat_quant
+    # fundamentals — wired in Phase 5
 
 aggregator:
   conflict_threshold: 0.10

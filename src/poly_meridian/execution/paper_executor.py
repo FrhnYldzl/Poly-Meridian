@@ -30,6 +30,7 @@ from poly_meridian.domain import (
     TradeDecision,
 )
 from poly_meridian.execution.base import Executor
+from poly_meridian.execution.fees import DEFAULT_FEES, FeeSchedule
 from poly_meridian.execution.slippage_model import walk_book_for_fill
 from poly_meridian.ingestion.book import LocalBook
 
@@ -61,6 +62,8 @@ class PaperExecutor(Executor):
         self,
         *,
         maker_timeout_sec: float = 60.0,
+        fee_schedule: FeeSchedule | None = None,
+        us_mode: bool = False,
         on_fill: object = None,  # Callable[[Order], Awaitable[None]] — wired by main loop
     ) -> None:
         self._books: dict[str, LocalBook] = {}
@@ -69,9 +72,32 @@ class PaperExecutor(Executor):
         self._maker_timeout_sec = maker_timeout_sec
         self._lock = asyncio.Lock()
         self._on_fill = on_fill  # async callback per filled order
+        self._fees = fee_schedule or DEFAULT_FEES
+        self._us_mode = us_mode
+        self._token_category: dict[str, str] = {}
 
     def attach_book(self, token_id: str, book: LocalBook) -> None:
         self._books[token_id] = book
+
+    def attach_category(self, token_id: str, category: str | None) -> None:
+        if category:
+            self._token_category[token_id] = category
+
+    def estimate_fill_fee(
+        self,
+        *,
+        token_id: str,
+        notional_usd: Decimal,
+        price: float,
+        is_maker: bool,
+    ) -> Decimal:
+        return self._fees.estimate_fee_usd(
+            notional_usd=notional_usd,
+            category=self._token_category.get(token_id),
+            is_maker=is_maker,
+            price=price,
+            us_mode=self._us_mode,
+        )
 
     async def submit(self, decision: TradeDecision) -> Order:
         order_id = f"paper-{uuid.uuid4().hex[:12]}"
@@ -226,6 +252,17 @@ class PaperExecutor(Executor):
         order.status = (
             OrderStatus.FILLED if total_filled >= order.size else OrderStatus.PARTIAL
         )
+        # Per-category fee (§2.2). Maker fills are at limit price (free),
+        # taker fills paid VWAP. We approximate is_maker by order_type:
+        # GTC/GTD resting and crossing at our limit are maker, FOK/FAK taker.
+        is_maker = order.order_type.name in ("GTC", "GTD")
+        notional = vwap * filled
+        fee = self.estimate_fill_fee(
+            token_id=order.token_id,
+            notional_usd=notional,
+            price=float(vwap),
+            is_maker=is_maker,
+        )
         log.info(
             "paper.fill",
             order_id=order.order_id,
@@ -233,10 +270,19 @@ class PaperExecutor(Executor):
             vwap=str(vwap),
             filled=str(filled),
             cumulative=str(total_filled),
+            fee_usd=str(fee),
+            is_maker=is_maker,
             status=str(order.status),
         )
         if self._on_fill is not None and order.status in (OrderStatus.FILLED, OrderStatus.PARTIAL):
             try:
-                await self._on_fill(order)  # type: ignore[misc]
+                # Pass the just-applied fill + fee so the ledger can record them.
+                await self._on_fill(order, filled, vwap, fee)  # type: ignore[misc]
+            except TypeError:
+                # Backwards-compat: callers wired before the fee-aware change
+                try:
+                    await self._on_fill(order)  # type: ignore[misc]
+                except Exception as exc:
+                    log.warning("paper.on_fill_error", error=str(exc), order_id=order.order_id)
             except Exception as exc:
                 log.warning("paper.on_fill_error", error=str(exc), order_id=order.order_id)
