@@ -52,6 +52,7 @@ from poly_meridian.storage.writers import (
 )
 from poly_meridian.strategies import (
     ArbitrageStrategy,
+    ClusterStateBuilder,
     SentimentStrategy,
     SignalAggregator,
     SmartMoneyStrategy,
@@ -241,6 +242,7 @@ async def _gamma_sync_loop(
     market_cache: dict[str, Any],
     news_proc: NewsProcessor | None,
     log: Any,
+    cluster_builder: ClusterStateBuilder | None = None,
 ) -> None:
     while not stop.is_set():
         try:
@@ -267,6 +269,27 @@ async def _gamma_sync_loop(
                     log.warning("gamma_sync.persist_skip", error=str(exc))
                 PM_MARKETS_TOTAL.set(len(rows))
                 market_cache["markets"] = raw
+                # Register token→condition mappings into the cluster builder
+                # so when on-chain CTF transfers arrive, we can route them
+                # to the right condition. Safe to call every sync — idempotent.
+                if cluster_builder is not None:
+                    registered = 0
+                    for r in raw:
+                        m = gamma_market_to_domain(r)
+                        if m is None:
+                            continue
+                        cluster_builder.register_token_to_condition(
+                            token_id=m.yes_token_id,
+                            condition_id=m.condition_id,
+                            direction="YES",
+                        )
+                        cluster_builder.register_token_to_condition(
+                            token_id=m.no_token_id,
+                            condition_id=m.condition_id,
+                            direction="NO",
+                        )
+                        registered += 2
+                    log.info("cluster_builder.tokens_registered", n=registered)
                 log.info("gamma_sync.done", n=len(rows))
         except Exception as exc:
             log.warning("gamma_sync.error", error=str(exc))
@@ -484,6 +507,17 @@ def _build_pipeline_and_news_proc() -> tuple[Pipeline, NewsProcessor | None]:
     )
     executor._on_fill = pipeline.on_fill  # type: ignore[attr-defined]
 
+    # Smart-money cluster builder — aggregates on-chain CTF transfers into
+    # per-condition cluster states that SmartMoneyStrategy consumes. The
+    # builder stays warm even before an on-chain event source is wired:
+    # gamma_sync registers token→condition mappings so once events flow,
+    # cluster snapshots fire immediately. .start(events) gets called when
+    # we add the Alchemy/RPC feed.
+    cluster_builder = ClusterStateBuilder()
+    if smart_money is not None:
+        cluster_builder.attach_to_strategy(smart_money)
+    pipeline.cluster_builder = cluster_builder  # type: ignore[attr-defined]
+
     # Build sentiment processor based on available API keys.
     # Scorer priority: Anthropic Claude > Google Gemini > heuristic keyword.
     # Matching: OpenAI embeddings (vector mode) when available, else Postgres
@@ -586,7 +620,11 @@ async def run() -> None:
     tasks: list[asyncio.Task[None]] = [
         asyncio.create_task(_serve_api(settings.prometheus_port, broker), name="api"),
         asyncio.create_task(
-            _gamma_sync_loop(stop_event, market_cache, news_proc, log), name="gamma_sync"
+            _gamma_sync_loop(
+                stop_event, market_cache, news_proc, log,
+                getattr(pipeline, "cluster_builder", None),
+            ),
+            name="gamma_sync",
         ),
         asyncio.create_task(_news_ingest_loop(stop_event, market_cache, log), name="news_ingest"),
         asyncio.create_task(
