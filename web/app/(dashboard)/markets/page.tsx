@@ -18,8 +18,6 @@ interface GammaMarket {
   active?: boolean;
 }
 
-const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
-
 export default function MarketsPage() {
   const { snapshot } = useSharedAgentState();
   const [markets, setMarkets] = useState<GammaMarket[]>([]);

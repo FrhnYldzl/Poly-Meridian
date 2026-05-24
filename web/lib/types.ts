@@ -26,6 +26,7 @@ export interface Position {
   unrealized_pnl: number;
   entry?: PositionEntry | null;
   trade_metrics?: TradeMetrics | null;
+  category?: string | null;
 }
 
 export interface Signal {

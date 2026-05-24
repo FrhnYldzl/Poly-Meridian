@@ -41,17 +41,18 @@ export function MarketsCoveragePanel({ snapshot }: MarketsCoveragePanelProps) {
   const totalActive = snapshot?.markets_active_total ?? 0;
   const wsCount = snapshot?.ws_subscribed_total ?? snapshot?.markets_watched ?? 0;
 
-  // Merge known-order categories + any extras Gamma surfaces.
+  // Merge known-order categories + any extras Gamma surfaces, suppressing
+  // zero-count entries so we don't show ghost rows in the panel.
   const seen = new Set<string>();
   const ordered: [string, number][] = [];
   for (const cat of CATEGORY_ORDER) {
-    if (byCat[cat] != null) {
+    if (byCat[cat] != null && byCat[cat] > 0) {
       ordered.push([cat, byCat[cat]]);
       seen.add(cat);
     }
   }
   for (const [cat, n] of Object.entries(byCat)) {
-    if (!seen.has(cat)) ordered.push([cat, n]);
+    if (!seen.has(cat) && n > 0) ordered.push([cat, n]);
   }
 
   // Largest count drives the bar widths.

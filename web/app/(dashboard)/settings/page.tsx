@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { PageHeader } from "@/components/page-header";
 import { Panel } from "@/components/panel";
+import { fetchSettings } from "@/lib/api";
 
 interface SettingsResp {
   mode: string;
@@ -12,16 +13,13 @@ interface SettingsResp {
   sentiment_window_sec: number;
 }
 
-const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
-
 export default function SettingsPage() {
   const [data, setData] = useState<SettingsResp | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
-    fetch(`${API}/api/settings`)
-      .then((r) => r.json())
-      .then((j) => setData(j))
+    fetchSettings()
+      .then((j) => setData(j as unknown as SettingsResp))
       .catch((e) => setErr(String(e)));
   }, []);
 

@@ -26,3 +26,9 @@ export async function disengageKillSwitch(): Promise<void> {
 export function streamUrl(): string {
   return `${API}/api/stream`;
 }
+
+export async function fetchSettings(): Promise<Record<string, unknown>> {
+  const res = await fetch(`${API}/api/settings`, { cache: "no-store" });
+  if (!res.ok) throw new Error(`settings fetch failed: ${res.status}`);
+  return res.json();
+}

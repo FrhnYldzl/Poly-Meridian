@@ -11,6 +11,7 @@ import {
   LineChart,
   ListOrdered,
   Menu,
+  PieChart,
   Shield,
   Sliders,
   Wallet,
@@ -27,6 +28,7 @@ interface NavItem {
 
 const NAV_ITEMS: NavItem[] = [
   { href: "/", label: "Overview", hotkey: "G O", icon: LayoutGrid },
+  { href: "/portfolio", label: "Portfolio", hotkey: "G P", icon: PieChart },
   { href: "/markets", label: "Markets", hotkey: "G M", icon: BarChart3 },
   { href: "/strategies", label: "Strategies", hotkey: "G S", icon: Brain },
   { href: "/orders", label: "Orders", hotkey: "G R", icon: ListOrdered },

@@ -15,7 +15,7 @@ export default function OverviewPage() {
 
   return (
     <div className="flex h-full flex-col">
-      {/* Strategies row */}
+      {/* Strategies row — sticky context: which strategies + their hit-rate */}
       <div className="border-b border-terminal-border">
         <StrategiesPanel
           enabled={snapshot?.strategies_enabled ?? []}
@@ -23,7 +23,10 @@ export default function OverviewPage() {
         />
       </div>
 
-      {/* 2×4 panel grid: positions | signals | activity | risk on top row, orders + smart-money below */}
+      {/* 3-row grid for breathing room.
+            Row 1: Positions (wide) | Signals | Activity | Risk
+            Row 2: Orders (wide) | Markets Coverage | Smart Money
+        Spans designed so no panel collides at the lg breakpoint. */}
       <div className="grid min-h-0 flex-1 grid-cols-1 gap-2 p-2 lg:grid-cols-12 lg:grid-rows-2">
         <div className="min-h-0 lg:col-span-5">
           <PositionsTable positions={snapshot?.open_positions ?? []} />
@@ -41,11 +44,11 @@ export default function OverviewPage() {
         <div className="min-h-0 lg:col-span-5">
           <OrdersFeed orders={snapshot?.last_orders ?? []} />
         </div>
-        <div className="min-h-0 lg:col-span-4">
-          <SmartMoneyPanel clusters={snapshot?.smart_money_clusters ?? []} />
-        </div>
         <div className="min-h-0 lg:col-span-3">
           <MarketsCoveragePanel snapshot={snapshot} />
+        </div>
+        <div className="min-h-0 lg:col-span-4">
+          <SmartMoneyPanel clusters={snapshot?.smart_money_clusters ?? []} />
         </div>
       </div>
     </div>

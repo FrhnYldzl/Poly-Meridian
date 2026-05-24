@@ -25,10 +25,15 @@ export default function SmartMoneyPage() {
           className="min-h-0 xl:col-span-5"
         >
           <div className="grid grid-cols-3 gap-2 p-4">
-            <TierCard label="Tier 1" tone="green" count={0} desc="proven · auto-trade · full Kelly" />
-            <TierCard label="Tier 2" tone="yellow" count={0} desc="hot · auto-trade · half Kelly" />
-            <TierCard label="Tier 3" tone="cyan" count={0} desc="observation only" />
+            <TierCard label="Tier 1" tone="green" count={null} desc="proven · auto-trade · full Kelly" />
+            <TierCard label="Tier 2" tone="yellow" count={null} desc="hot · auto-trade · half Kelly" />
+            <TierCard label="Tier 3" tone="cyan" count={null} desc="observation only" />
           </div>
+          <p className="px-4 pb-4 text-center font-mono text-[10px] text-terminal-dim">
+            on-chain feed wires in Phase 5b — leaderboard scraping +
+            ClusterStateBuilder ingestion. Token→condition mapping is already
+            live, only the event source is pending.
+          </p>
         </Panel>
         <Panel
           title="Filter rejections"
@@ -55,7 +60,7 @@ function TierCard({
 }: {
   label: string;
   tone: "green" | "yellow" | "cyan";
-  count: number;
+  count: number | null;
   desc: string;
 }) {
   const tones = {
@@ -66,7 +71,9 @@ function TierCard({
   return (
     <div className={"flex flex-col rounded border bg-terminal-bg p-3 " + tones[tone]}>
       <span className="text-[10px] uppercase tracking-wider">{label}</span>
-      <span className="numeric mt-1 text-2xl font-semibold">{count}</span>
+      <span className="numeric mt-1 text-2xl font-semibold">
+        {count === null ? <span className="text-terminal-dim/60">—</span> : count}
+      </span>
       <span className="text-[9px] leading-tight text-terminal-dim">{desc}</span>
     </div>
   );

@@ -258,6 +258,7 @@ async def _broker_refresh_loop(
             # last fill). Edge defaults to 0 — once the order is in the books
             # we don't have the strategy's original edge handy here.
             open_positions_out: list[dict[str, Any]] = []
+            tok_to_cat = getattr(pipeline, "token_to_category", {}) or {}
             for p in pipeline.ledger.positions():
                 tm = compute_trade_metrics(
                     entry_price=float(p.avg_cost) if p.avg_cost else None,
@@ -272,6 +273,9 @@ async def _broker_refresh_loop(
                     "unrealized_pnl": float(p.qty * (p.last_mark - p.avg_cost)),
                     "entry": entry_by_token.get(p.token_id),
                     "trade_metrics": tm.asdict() if tm is not None else None,
+                    # Category from pipeline's token→category map (populated
+                    # by Pipeline.register_market during _pipeline_loop).
+                    "category": tok_to_cat.get(p.token_id),
                 })
             broker.update_portfolio(
                 nav_usd=snap.nav_usd,

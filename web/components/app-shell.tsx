@@ -77,7 +77,7 @@ export function AppShell({ children }: AppShellProps) {
 
         <footer className="flex items-center justify-between border-t border-terminal-border bg-terminal-surfaceAlt px-3 py-1 font-mono text-[10px] uppercase tracking-wider text-terminal-dim">
           <span className="hidden md:inline">
-            [G+O]OVERVIEW [G+M]MARKETS [G+S]STRATEGIES [G+R]ORDERS [G+W]SMART-MONEY [G+B]BACKTEST [K]KILL
+            [G+O]OVERVIEW [G+P]PORTFOLIO [G+M]MARKETS [G+S]STRATEGIES [G+R]ORDERS [G+W]SMART-MONEY [K]KILL
           </span>
           <span className="md:hidden">[K] kill-switch</span>
           <span>
