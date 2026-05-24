@@ -9,7 +9,7 @@ from typing import Any
 import structlog
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
 from poly_meridian.api.state import AgentStateBroker
 from poly_meridian.settings import get_settings
@@ -33,6 +33,50 @@ def build_app(broker: AgentStateBroker) -> FastAPI:
         allow_methods=["GET", "POST"],
         allow_headers=["*"],
     )
+
+    @app.get("/", response_class=HTMLResponse)
+    async def root() -> str:
+        """Friendly landing — the agent serves JSON APIs, not the UI.
+        Tells visitors where to find the dashboard + docs."""
+        snap = broker.snapshot
+        uptime_h = snap.uptime_sec / 3600
+        return f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8"/>
+<title>Poly Meridian — Agent API</title>
+<style>
+  body{{background:#0a0a0b;color:#e5e5e7;font-family:ui-monospace,Menlo,monospace;
+       margin:0;padding:48px;line-height:1.6;font-size:13px}}
+  h1{{color:#ff9e0a;font-size:18px;letter-spacing:.2em;text-transform:uppercase;margin:0 0 24px}}
+  .stat{{display:inline-block;margin-right:24px}}.lbl{{color:#5c5c63;font-size:11px;text-transform:uppercase;letter-spacing:.1em}}
+  .v{{color:#fafafa;font-size:18px;font-weight:600}}.amber{{color:#ff9e0a}}
+  ul{{padding-left:18px;color:#22d3ee}}a{{color:#22d3ee;text-decoration:none}}
+  hr{{border:0;border-top:1px solid #262629;margin:24px 0}}
+  pre{{background:#111114;padding:12px;border:1px solid #262629;border-radius:4px;overflow-x:auto}}
+</style></head>
+<body>
+<h1>POLY • MERIDIAN — Agent API</h1>
+<div>
+  <div class="stat"><div class="lbl">Mode</div><div class="v amber">{snap.mode}</div></div>
+  <div class="stat"><div class="lbl">NAV</div><div class="v">${snap.nav_usd:,.0f}</div></div>
+  <div class="stat"><div class="lbl">Markets</div><div class="v">{snap.markets_watched}</div></div>
+  <div class="stat"><div class="lbl">Ticks</div><div class="v">{snap.pipeline_ticks_total:,}</div></div>
+  <div class="stat"><div class="lbl">Uptime</div><div class="v">{uptime_h:.1f}h</div></div>
+  <div class="stat"><div class="lbl">Kill-switch</div><div class="v" style="color:{'#ef4444' if snap.kill_switch_engaged else '#22c55e'}">{('ENGAGED' if snap.kill_switch_engaged else 'ARMED')}</div></div>
+</div>
+<hr/>
+<p>This is the <b>agent API</b>, not the dashboard. The Bloomberg-style
+operator UI lives in a separate Railway service. Useful endpoints here:</p>
+<ul>
+  <li><a href="/health">/health</a> — liveness probe</li>
+  <li><a href="/api/state">/api/state</a> — full snapshot JSON</li>
+  <li><a href="/api/settings">/api/settings</a> — effective config</li>
+  <li><a href="/api/stream">/api/stream</a> — Server-Sent Events feed</li>
+  <li><a href="/api/docs">/api/docs</a> — Swagger / OpenAPI docs</li>
+</ul>
+<p>To open the dashboard, deploy the <code>web</code> service (Next.js,
+root directory <code>web/</code>) with <code>NEXT_PUBLIC_API_URL</code> set to this URL.
+See <a href="https://github.com/FrhnYldzl/Poly-Meridian/blob/main/docs/railway-deploy.md">docs/railway-deploy.md</a>.</p>
+</body></html>"""
 
     @app.get("/health")
     async def health() -> dict[str, str]:
