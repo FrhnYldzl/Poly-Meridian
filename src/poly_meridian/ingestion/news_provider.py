@@ -111,17 +111,42 @@ class GdeltNewsSource(IngestionSource):
         if queries:
             self._dynamic_queries = queries
 
+    # GDELT enforces "one request per 5 seconds" — without this gap they
+    # return a plaintext rate-limit notice ("Please limit requests to one
+    # every 5 seconds…") that fails our JSON guard and silently drops the
+    # cycle. We use 5.5s for a small safety margin.
+    _MIN_QUERY_GAP_SEC = 5.5
+
     async def _loop(self) -> None:
         while not self._stop.is_set():
             queries = self._dynamic_queries or self._queries
+            n_articles = 0
+            n_empty = 0
             try:
-                for q in queries:
+                for i, q in enumerate(queries):
                     if self._stop.is_set():
                         break
+                    if i > 0:
+                        # Stay below GDELT's 1-req-per-5s ceiling.
+                        try:
+                            await asyncio.wait_for(
+                                self._stop.wait(), timeout=self._MIN_QUERY_GAP_SEC
+                            )
+                            return
+                        except asyncio.TimeoutError:
+                            pass
                     articles = await self._fetch_query(q)
+                    if not articles:
+                        n_empty += 1
+                    n_articles += len(articles)
                     for a in articles:
                         self._enqueue(a)
-                log.info("news.poll_cycle", n_queries=len(queries))
+                log.info(
+                    "news.poll_cycle",
+                    n_queries=len(queries),
+                    n_articles=n_articles,
+                    n_empty_queries=n_empty,
+                )
             except Exception as exc:
                 log.warning("news.poll_error", error=str(exc))
 
@@ -151,7 +176,15 @@ class GdeltNewsSource(IngestionSource):
                 r.raise_for_status()
                 # GDELT sometimes returns an empty body or non-JSON HTML on
                 # rate limit / no results. Guard against both.
-                if not r.text or not r.text.strip().startswith("{"):
+                body = r.text or ""
+                if not body.strip().startswith("{"):
+                    # Surface rate-limit hits — they used to be silent.
+                    if "limit requests" in body.lower() or "5 seconds" in body:
+                        log.warning(
+                            "news.gdelt.rate_limited",
+                            query=query[:60],
+                            hint="increase _MIN_QUERY_GAP_SEC",
+                        )
                     return []
                 try:
                     data = r.json()
