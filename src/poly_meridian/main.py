@@ -170,6 +170,9 @@ async def _broker_refresh_loop(
                 engaged=pipeline.risk.is_kill_switch_engaged(),
                 reason=str(pipeline.risk.kill_switch.reason) if pipeline.risk.kill_switch.engaged else None,
             )
+            # Push full snapshot so the UI's SSE subscriber refreshes ticks /
+            # markets / NAV / counters every 5s without re-fetching REST.
+            broker.emit_snapshot()
         except Exception:
             pass
         try:

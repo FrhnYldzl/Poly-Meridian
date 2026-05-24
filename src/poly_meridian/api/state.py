@@ -154,6 +154,15 @@ class AgentStateBroker:
     def heartbeat(self) -> None:
         self._enqueue({"type": "heartbeat", "ts": datetime.now(UTC).isoformat()})
 
+    def emit_snapshot(self) -> None:
+        """Push the current snapshot to all subscribers as a full refresh.
+
+        The UI's SSE reducer handles `type: snapshot` by replacing state — so
+        calling this from the broker_refresh_loop every 5s gives the dashboard
+        a live view of NAV / ticks / markets without REST re-fetching.
+        """
+        self._enqueue({"type": "snapshot", "data": self.snapshot.asdict()})
+
     # ---------- subscription plumbing ----------
 
     async def subscribe(self) -> asyncio.Queue[dict[str, Any]]:
