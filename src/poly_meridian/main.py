@@ -37,6 +37,7 @@ from poly_meridian.observability.logging_config import configure_logging
 from poly_meridian.pipeline import Pipeline
 from poly_meridian.portfolio import Ledger, snapshot
 from poly_meridian.risk import DefaultRiskPolicy, RiskLimits
+from poly_meridian.risk.trade_metrics import compute_trade_metrics
 from poly_meridian.sentiment import (
     ClaudeSentimentScorer,
     GeminiSentimentScorer,
@@ -63,7 +64,14 @@ from poly_meridian.strategies import (
 GAMMA_SYNC_INTERVAL_SEC = 300
 NEWS_PROCESS_INTERVAL_SEC = 180
 PIPELINE_TICK_INTERVAL_SEC = 5
-WS_SAMPLE_SIZE = 40  # markets subscribed via WS
+# Polymarket CLOB WS allows up to ~100 asset_ids per connection.
+# 50 markets × 2 outcomes = 100 token IDs — at the safe ceiling on a single
+# connection. Raising further would require multiplexing across connections.
+WS_SAMPLE_SIZE = 50
+# Per-category cap when picking markets to subscribe to — without this, one
+# hot category (Politics during elections, Crypto during halving, etc.)
+# eats every WS slot and the agent goes blind on everything else.
+WS_MAX_PER_CATEGORY = 12
 
 PM_MARKETS_TOTAL = Gauge("pm_markets_total", "active markets known to the agent")
 PM_NEWS_INGESTED = Counter("pm_news_ingested_total", "news articles ingested")
@@ -79,6 +87,54 @@ def _load_yaml(path: str) -> dict[str, Any]:
         return yaml.safe_load(cfg.read_text(encoding="utf-8")) or {}
     except FileNotFoundError:
         return {}
+
+
+def _pick_markets_for_ws(
+    markets: list[dict[str, Any]],
+    *,
+    sample_size: int,
+    max_per_category: int,
+) -> list[dict[str, Any]]:
+    """Rank markets by liquidity DESC, cap per category, return top N.
+
+    Without the per-category cap a single hot category (Politics around
+    elections, Crypto around halvings) eats every WS subscription slot and
+    the agent goes blind on everything else. With the cap we get coverage
+    proportional to how active each category is.
+    """
+    if not markets:
+        return []
+
+    def _liq(r: dict[str, Any]) -> float:
+        v = r.get("liquidityNum") or r.get("liquidity") or 0
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return 0.0
+
+    ranked = sorted(markets, key=_liq, reverse=True)
+    picked: list[dict[str, Any]] = []
+    per_cat: dict[str, int] = {}
+    for r in ranked:
+        if len(picked) >= sample_size:
+            break
+        cat = (r.get("category") or r.get("sub_category") or "Other").strip() or "Other"
+        if per_cat.get(cat, 0) >= max_per_category:
+            continue
+        picked.append(r)
+        per_cat[cat] = per_cat.get(cat, 0) + 1
+
+    # If we still have slots after the cap (very narrow universe), fill with
+    # the highest-liquidity leftovers ignoring the cap.
+    if len(picked) < sample_size:
+        ids_in = {id(r) for r in picked}
+        for r in ranked:
+            if id(r) in ids_in:
+                continue
+            picked.append(r)
+            if len(picked) >= sample_size:
+                break
+    return picked
 
 
 def _load_risk_limits() -> RiskLimits:
@@ -197,25 +253,33 @@ async def _broker_refresh_loop(
                     "entry_price": float(entry.price),
                     "entry_ts": entry.ts.isoformat(),
                 }
+            # Per-position risk/reward (uses avg_cost as the entry price so
+            # max_loss / max_gain reflect *cumulative* notional, not just the
+            # last fill). Edge defaults to 0 — once the order is in the books
+            # we don't have the strategy's original edge handy here.
+            open_positions_out: list[dict[str, Any]] = []
+            for p in pipeline.ledger.positions():
+                tm = compute_trade_metrics(
+                    entry_price=float(p.avg_cost) if p.avg_cost else None,
+                    size_units=abs(float(p.qty)),
+                    edge=0.0,
+                )
+                open_positions_out.append({
+                    "token_id": p.token_id,
+                    "qty": float(p.qty),
+                    "avg_cost": float(p.avg_cost),
+                    "last_mark": float(p.last_mark),
+                    "unrealized_pnl": float(p.qty * (p.last_mark - p.avg_cost)),
+                    "entry": entry_by_token.get(p.token_id),
+                    "trade_metrics": tm.asdict() if tm is not None else None,
+                })
             broker.update_portfolio(
                 nav_usd=snap.nav_usd,
                 cash_usd=snap.cash_usd,
                 open_position_count=snap.open_position_count,
                 daily_pnl_pct=snap.daily_pnl_pct,
                 total_exposure_pct=snap.total_exposure_pct,
-                open_positions=[
-                    {
-                        "token_id": p.token_id,
-                        "qty": float(p.qty),
-                        "avg_cost": float(p.avg_cost),
-                        "last_mark": float(p.last_mark),
-                        "unrealized_pnl": float(p.qty * (p.last_mark - p.avg_cost)),
-                        # Entry attribution — strategy + opening price + ts.
-                        # None for positions opened before this fix shipped.
-                        "entry": entry_by_token.get(p.token_id),
-                    }
-                    for p in pipeline.ledger.positions()
-                ],
+                open_positions=open_positions_out,
             )
             broker.update_kill_switch(
                 engaged=pipeline.risk.is_kill_switch_engaged(),
@@ -262,6 +326,7 @@ async def _gamma_sync_loop(
     news_proc: NewsProcessor | None,
     log: Any,
     cluster_builder: ClusterStateBuilder | None = None,
+    broker: AgentStateBroker | None = None,
 ) -> None:
     while not stop.is_set():
         try:
@@ -288,6 +353,18 @@ async def _gamma_sync_loop(
                     log.warning("gamma_sync.persist_skip", error=str(exc))
                 PM_MARKETS_TOTAL.set(len(rows))
                 market_cache["markets"] = raw
+                # Category breakdown for the operator dashboard. Empty /
+                # uncategorized markets fall into "Other" so totals match.
+                if broker is not None:
+                    cat_counts: dict[str, int] = {}
+                    for r in raw:
+                        cat = (r.get("category") or r.get("sub_category") or "Other").strip() or "Other"
+                        cat_counts[cat] = cat_counts.get(cat, 0) + 1
+                    broker.update_market_coverage(
+                        markets_by_category=cat_counts,
+                        markets_active_total=len(raw),
+                        ws_subscribed_total=min(WS_SAMPLE_SIZE, len(raw)),
+                    )
                 # Register token→condition mappings into the cluster builder
                 # so when on-chain CTF transfers arrive, we can route them
                 # to the right condition. Safe to call every sync — idempotent.
@@ -395,11 +472,16 @@ async def _pipeline_loop(
                 except asyncio.TimeoutError:
                     continue
 
-            # Sample markets for WS subscription. Re-subscribe whenever the
-            # active set changes meaningfully (Phase 3: simple resubscribe
-            # every gamma cycle).
+            # Smart sampling: rank by liquidity DESC, but cap per category so
+            # one hot category doesn't eat every WS slot. Result is N markets
+            # spread across categories with the most active books in each.
+            picked = _pick_markets_for_ws(
+                markets,
+                sample_size=WS_SAMPLE_SIZE,
+                max_per_category=WS_MAX_PER_CATEGORY,
+            )
             sampled = []
-            for raw in markets[:WS_SAMPLE_SIZE]:
+            for raw in picked:
                 m = gamma_market_to_domain(raw)
                 if m is None:
                     continue
@@ -680,6 +762,7 @@ async def run() -> None:
             _gamma_sync_loop(
                 stop_event, market_cache, news_proc, log,
                 getattr(pipeline, "cluster_builder", None),
+                broker,
             ),
             name="gamma_sync",
         ),

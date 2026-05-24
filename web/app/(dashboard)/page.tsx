@@ -2,6 +2,7 @@
 
 import { useSharedAgentState } from "@/hooks/use-shared-agent-state";
 import { ActivityPanel } from "@/components/activity-panel";
+import { MarketsCoveragePanel } from "@/components/markets-coverage-panel";
 import { OrdersFeed } from "@/components/orders-feed";
 import { PositionsTable } from "@/components/positions-table";
 import { RiskPanel } from "@/components/risk-panel";
@@ -37,11 +38,14 @@ export default function OverviewPage() {
           <RiskPanel snapshot={snapshot} />
         </div>
 
-        <div className="min-h-0 lg:col-span-6">
+        <div className="min-h-0 lg:col-span-5">
           <OrdersFeed orders={snapshot?.last_orders ?? []} />
         </div>
-        <div className="min-h-0 lg:col-span-6">
+        <div className="min-h-0 lg:col-span-4">
           <SmartMoneyPanel clusters={snapshot?.smart_money_clusters ?? []} />
+        </div>
+        <div className="min-h-0 lg:col-span-3">
+          <MarketsCoveragePanel snapshot={snapshot} />
         </div>
       </div>
     </div>

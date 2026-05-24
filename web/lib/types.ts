@@ -6,6 +6,18 @@ export interface PositionEntry {
   entry_ts: string;
 }
 
+export interface TradeMetrics {
+  entry_price: number;
+  size_units: number;
+  notional_usd: number;
+  max_loss_usd: number;
+  max_gain_usd: number;
+  risk_reward_ratio: number;
+  our_prob: number;
+  expected_pnl_usd: number;
+  ev_per_dollar: number;
+}
+
 export interface Position {
   token_id: string;
   qty: number;
@@ -13,6 +25,7 @@ export interface Position {
   last_mark: number;
   unrealized_pnl: number;
   entry?: PositionEntry | null;
+  trade_metrics?: TradeMetrics | null;
 }
 
 export interface Signal {
@@ -45,6 +58,8 @@ export interface OrderRow {
   conviction?: number;
   size_pct?: number;
   market_question?: string;
+  category?: string | null;
+  trade_metrics?: TradeMetrics | null;
 }
 
 export interface SmartMoneyCluster {
@@ -88,6 +103,10 @@ export interface AgentSnapshot {
   news_signals_emitted_total?: number;
   news_matcher_mode?: "inmem-vector" | "pgvector" | "keyword" | null;
   scorer_kind?: "claude" | "gemini" | "heuristic" | null;
+  // Polymarket category coverage — counts of active markets we know about.
+  markets_by_category?: Record<string, number>;
+  markets_active_total?: number;
+  ws_subscribed_total?: number;
 }
 
 export type StreamEvent =

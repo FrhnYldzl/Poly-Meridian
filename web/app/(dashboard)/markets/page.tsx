@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { PageHeader } from "@/components/page-header";
 import { Panel } from "@/components/panel";
+import { CATEGORY_COLOR } from "@/components/markets-coverage-panel";
 import { useSharedAgentState } from "@/hooks/use-shared-agent-state";
 import { formatCompact, formatUsd, relativeTime } from "@/lib/utils";
 
@@ -109,7 +110,8 @@ export default function MarketsPage() {
 }
 
 function Row({ m }: { m: GammaMarket }) {
-  const cat = m.category ?? "—";
+  const cat = m.category ?? "Other";
+  const catTone = CATEGORY_COLOR[cat] ?? "text-terminal-amber";
   const vol = m.volumeNum ?? 0;
   const liq = m.liquidityNum ?? 0;
   const end = m.endDateIso ? relativeTime(m.endDateIso) : "—";
@@ -118,7 +120,16 @@ function Row({ m }: { m: GammaMarket }) {
       <td className="max-w-[600px] truncate px-3 py-1.5 text-terminal-text" title={m.question}>
         {m.question}
       </td>
-      <td className="px-3 py-1.5 text-terminal-amber">{cat}</td>
+      <td className="px-3 py-1.5">
+        <span
+          className={
+            "rounded border border-terminal-border px-1.5 py-0.5 text-[10px] uppercase tracking-wider " +
+            catTone
+          }
+        >
+          {cat}
+        </span>
+      </td>
       <td className="numeric px-3 py-1.5 text-right">{formatUsd(vol)}</td>
       <td className="numeric px-3 py-1.5 text-right text-terminal-dim">{formatCompact(liq)}</td>
       <td className="px-3 py-1.5 text-right text-terminal-dim">{end}</td>

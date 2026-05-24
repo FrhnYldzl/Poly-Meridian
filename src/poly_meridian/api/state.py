@@ -59,6 +59,12 @@ class Snapshot:
     news_signals_emitted_total: int = 0
     news_matcher_mode: str | None = None   # "inmem-vector" | "pgvector" | "keyword"
     scorer_kind: str | None = None         # "claude" | "gemini" | "heuristic"
+    # Polymarket category breakdown — counts of active markets per category
+    # (Politics, Sports, Crypto, Pop Culture, Business, Science, Tech, …).
+    # Lets the operator see what slice of the universe is being watched.
+    markets_by_category: dict[str, int] = field(default_factory=dict)
+    markets_active_total: int = 0          # full set returned by Gamma sync
+    ws_subscribed_total: int = 0           # subset we actually trade on
 
     def asdict(self) -> dict[str, Any]:
         return {
@@ -91,6 +97,9 @@ class Snapshot:
             "news_signals_emitted_total": self.news_signals_emitted_total,
             "news_matcher_mode": self.news_matcher_mode,
             "scorer_kind": self.scorer_kind,
+            "markets_by_category": self.markets_by_category,
+            "markets_active_total": self.markets_active_total,
+            "ws_subscribed_total": self.ws_subscribed_total,
         }
 
 
@@ -171,6 +180,18 @@ class AgentStateBroker:
 
     def update_markets_watched(self, count: int) -> None:
         self._snapshot.markets_watched = count
+
+    def update_market_coverage(
+        self,
+        *,
+        markets_by_category: dict[str, int],
+        markets_active_total: int,
+        ws_subscribed_total: int,
+    ) -> None:
+        """Push category breakdown + WS-subscription split from gamma_sync."""
+        self._snapshot.markets_by_category = dict(markets_by_category)
+        self._snapshot.markets_active_total = markets_active_total
+        self._snapshot.ws_subscribed_total = ws_subscribed_total
 
     def update_infra(
         self,

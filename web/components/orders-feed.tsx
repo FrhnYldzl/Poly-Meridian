@@ -59,9 +59,13 @@ function Row({ o }: { o: OrderRow }) {
       CANCELLED: "text-terminal-dim",
       REJECTED: "text-terminal-red",
     }[statusRaw as keyof object] ?? "text-terminal-text";
-  // Tooltip captures full attribution: market + edge + conviction + contributors
+  // Tooltip captures full attribution: market + edge + conviction +
+  // contributors + risk/reward summary so the operator can answer
+  // "neden girdik / riski nedir" without leaving the orders feed.
+  const tm = o.trade_metrics;
   const tipBody = [
     o.market_question ? `market: ${o.market_question}` : null,
+    o.category ? `category: ${o.category}` : null,
     o.condition_id ? `condition: ${o.condition_id}` : null,
     o.contributors?.length
       ? `contributors: ${o.contributors.join(", ")}`
@@ -69,6 +73,12 @@ function Row({ o }: { o: OrderRow }) {
     o.edge != null ? `edge: ${o.edge.toFixed(4)}` : null,
     o.conviction != null ? `conviction: ${o.conviction.toFixed(2)}` : null,
     o.size_pct != null ? `size_pct: ${(o.size_pct * 100).toFixed(2)}%` : null,
+    tm
+      ? `risk/reward: $${tm.max_loss_usd.toFixed(0)} loss vs $${tm.max_gain_usd.toFixed(0)} gain  (R:R ${tm.risk_reward_ratio.toFixed(2)})`
+      : null,
+    tm
+      ? `expected: $${tm.expected_pnl_usd.toFixed(2)}  (EV/$ ${(tm.ev_per_dollar * 100).toFixed(2)}%)`
+      : null,
     `order_id: ${o.order_id}`,
   ]
     .filter(Boolean)

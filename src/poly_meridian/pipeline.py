@@ -23,6 +23,7 @@ from poly_meridian.features import compute_features
 from poly_meridian.ingestion.book import LocalBook
 from poly_meridian.portfolio import Ledger, mark_all, snapshot
 from poly_meridian.risk import DefaultRiskPolicy, RiskDecision
+from poly_meridian.risk.trade_metrics import compute_trade_metrics
 from poly_meridian.strategies import (
     ArbitrageStrategy,
     SentimentStrategy,
@@ -205,6 +206,19 @@ class Pipeline:
         # the last leg name.
         broker = getattr(self, "broker", None)
         if broker is not None:
+            # Risk / reward / EV — answers "neden girdik, ne kazanırız,
+            # ne kaybederiz" without operator math. Uses fill price if
+            # available, otherwise the limit price. Edge stays as-is.
+            entry_price = (
+                float(order.avg_fill_price)
+                if order.avg_fill_price is not None
+                else (float(order.price) if order.price is not None else None)
+            )
+            tm = compute_trade_metrics(
+                entry_price=entry_price,
+                size_units=float(order.size),
+                edge=agg.edge,
+            )
             try:
                 broker.push_order({
                     "ts": (order.ts_filled or order.ts_created).isoformat(),
@@ -226,6 +240,8 @@ class Pipeline:
                     "conviction": agg.conviction,
                     "size_pct": agg.size_pct,
                     "market_question": market.question,
+                    "category": market.category,
+                    "trade_metrics": tm.asdict() if tm is not None else None,
                 })
             except Exception:
                 pass

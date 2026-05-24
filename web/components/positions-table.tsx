@@ -30,6 +30,9 @@ export function PositionsTable({ positions }: PositionsTableProps) {
               <th className="px-3 py-1.5 text-right font-medium">Avg cost</th>
               <th className="px-3 py-1.5 text-right font-medium">Mark</th>
               <th className="px-3 py-1.5 text-right font-medium">P&amp;L</th>
+              <th className="px-3 py-1.5 text-right font-medium" title="Risk : reward — risking $1 to make ($1−p)/p">R:R</th>
+              <th className="px-3 py-1.5 text-right font-medium" title="Max loss if token resolves to $0">Max loss</th>
+              <th className="px-3 py-1.5 text-right font-medium" title="Max gain if token resolves to $1">Max gain</th>
               <th className="px-3 py-1.5 text-right font-medium">Notional</th>
             </tr>
           </thead>
@@ -51,6 +54,16 @@ function Row({ p }: { p: Position }) {
   const notional = p.qty * p.last_mark;
   const strat = p.entry?.strategy ?? null;
   const entryPrice = p.entry?.entry_price ?? null;
+  const tm = p.trade_metrics;
+  // R:R coloring — symmetric (1.0) is neutral, > 1 = good asymmetry,
+  // < 1 = paying too much for the favorite.
+  const rrTone = tm
+    ? tm.risk_reward_ratio >= 1.5
+      ? "text-terminal-green"
+      : tm.risk_reward_ratio < 0.5
+        ? "text-terminal-red"
+        : "text-terminal-amber"
+    : "text-terminal-dim";
   return (
     <tr className="border-t border-terminal-border/60 hover:bg-terminal-surfaceAlt/50">
       <td className="px-3 py-1.5 text-terminal-amber" title={p.token_id}>
@@ -79,6 +92,15 @@ function Row({ p }: { p: Position }) {
       <td className="numeric px-3 py-1.5 text-right">{p.last_mark.toFixed(4)}</td>
       <td className={cn("numeric px-3 py-1.5 text-right", tone)}>
         {formatUsd(pnl, { showSign: true })}
+      </td>
+      <td className={cn("numeric px-3 py-1.5 text-right", rrTone)}>
+        {tm ? tm.risk_reward_ratio.toFixed(2) : "—"}
+      </td>
+      <td className="numeric px-3 py-1.5 text-right text-terminal-red/80">
+        {tm ? formatUsd(tm.max_loss_usd) : "—"}
+      </td>
+      <td className="numeric px-3 py-1.5 text-right text-terminal-green/80">
+        {tm ? formatUsd(tm.max_gain_usd) : "—"}
       </td>
       <td className="numeric px-3 py-1.5 text-right text-terminal-textBright">
         {formatUsd(notional)}
