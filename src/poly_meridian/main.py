@@ -15,7 +15,9 @@ Phase 3 wiring:
 from __future__ import annotations
 
 import asyncio
+import json
 import signal
+from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
@@ -51,8 +53,12 @@ from poly_meridian.settings import get_settings
 from poly_meridian.storage import close_cache, close_db, get_cache, get_db
 from poly_meridian.storage.writers import (
     fetch_recent_news_signals,
+    fetch_recent_orders,
+    fetch_recent_strategy_signals,
     insert_news_article,
+    insert_strategy_signal,
     upsert_markets,
+    upsert_order,
 )
 from poly_meridian.strategies import (
     ArbitrageStrategy,
@@ -824,6 +830,146 @@ async def run() -> None:
     broker.set_first_signal_hook(_alert_first_signal)
     broker.set_first_order_hook(_alert_first_order)
     broker.set_kill_switch_hook(_alert_kill_switch)
+
+    # ---- DB persistence hooks (Phase G) ----
+    # Mirror every signal + order to Postgres so the dashboard survives
+    # Railway restarts. Errors are swallowed inside push_* so a DB outage
+    # never blocks the trading loop.
+    def _persist_signal(sig: dict[str, Any]) -> None:
+        if not db_ok:
+            return
+        try:
+            ts_str = sig.get("ts")
+            ts = datetime.fromisoformat(ts_str) if isinstance(ts_str, str) else None
+        except Exception:
+            ts = None
+        if ts is None:
+            from datetime import datetime as _dt
+            from datetime import UTC as _UTC
+            ts = _dt.now(_UTC)
+
+        async def _go() -> None:
+            try:
+                db = await get_db()
+                await insert_strategy_signal(
+                    db,
+                    ts=ts,
+                    strategy=str(sig.get("strategy") or "?"),
+                    condition_id=str(sig.get("condition_id") or ""),
+                    token_id=str(sig.get("token_id") or ""),
+                    edge=float(sig.get("edge") or 0.0),
+                    conviction=float(sig.get("conviction") or 0.0),
+                    suggested_action=str(sig.get("suggested_action") or "HOLD"),
+                    rationale=sig.get("rationale") or {},
+                )
+            except Exception as exc:
+                log.debug("persist.signal_failed", error=str(exc)[:120])
+        try:
+            asyncio.create_task(_go())
+        except RuntimeError:
+            pass
+
+    def _persist_order(order: dict[str, Any]) -> None:
+        if not db_ok:
+            return
+        try:
+            ts_str = order.get("ts")
+            ts_created = datetime.fromisoformat(ts_str) if isinstance(ts_str, str) else None
+        except Exception:
+            ts_created = None
+        if ts_created is None:
+            from datetime import datetime as _dt
+            from datetime import UTC as _UTC
+            ts_created = _dt.now(_UTC)
+
+        async def _go() -> None:
+            try:
+                db = await get_db()
+                # The schema CHECKs reject lowercased side/status; uppercase
+                # them defensively. mode stays lowercase ("paper").
+                side = str(order.get("side") or "BUY").upper()
+                status = str(order.get("status") or "PENDING").upper()
+                await upsert_order(
+                    db,
+                    order_id=str(order.get("order_id") or ""),
+                    ts_created=ts_created,
+                    ts_filled=None,
+                    strategy=str(order.get("strategy") or "?"),
+                    token_id=str(order.get("token_id") or ""),
+                    side=side,
+                    order_type="GTC",
+                    price=Decimal(str(order["price"])) if order.get("price") is not None else None,
+                    size=Decimal(str(order.get("size") or 0)),
+                    filled_size=Decimal(str(order.get("filled_size") or 0)),
+                    avg_fill_price=(
+                        Decimal(str(order["avg_fill_price"]))
+                        if order.get("avg_fill_price") is not None else None
+                    ),
+                    status=status,
+                    mode=str(order.get("mode") or "paper"),
+                )
+            except Exception as exc:
+                log.debug("persist.order_failed", error=str(exc)[:120])
+        try:
+            asyncio.create_task(_go())
+        except RuntimeError:
+            pass
+
+    broker.set_persistence_hooks(
+        signal_hook=_persist_signal,
+        order_hook=_persist_order,
+    )
+
+    # ---- Boot backfill: restore last 50 signals/orders from DB so the
+    # dashboard doesn't go blank after a Railway restart. -----------
+    if db_ok:
+        try:
+            _db = await get_db()
+            past_orders = await fetch_recent_orders(_db, limit=50)
+            past_signals = await fetch_recent_strategy_signals(_db, limit=50)
+
+            def _normalize_signal(r: dict[str, Any]) -> dict[str, Any]:
+                rat = r.get("rationale")
+                if isinstance(rat, str):
+                    try:
+                        rat = json.loads(rat)
+                    except Exception:
+                        rat = {}
+                return {
+                    "ts": r["ts"].isoformat() if hasattr(r["ts"], "isoformat") else r["ts"],
+                    "strategy": r.get("strategy"),
+                    "condition_id": r.get("condition_id"),
+                    "token_id": r.get("token_id"),
+                    "edge": float(r.get("edge") or 0),
+                    "conviction": float(r.get("conviction") or 0),
+                    "suggested_action": r.get("suggested_action"),
+                    "rationale": rat or {},
+                }
+
+            def _normalize_order(r: dict[str, Any]) -> dict[str, Any]:
+                return {
+                    "ts": (r["ts_created"].isoformat() if hasattr(r["ts_created"], "isoformat") else r["ts_created"]),
+                    "order_id": r.get("order_id"),
+                    "strategy": r.get("strategy"),
+                    "token_id": r.get("token_id"),
+                    "side": r.get("side"),
+                    "status": r.get("status"),
+                    "price": r.get("price"),
+                    "size": r.get("size"),
+                    "filled_size": r.get("filled_size"),
+                    "avg_fill_price": r.get("avg_fill_price"),
+                    "mode": r.get("mode"),
+                }
+
+            broker.seed_signals([_normalize_signal(r) for r in past_signals])
+            broker.seed_orders([_normalize_order(r) for r in past_orders])
+            log.info(
+                "broker.backfilled",
+                signals=len(past_signals),
+                orders=len(past_orders),
+            )
+        except Exception as exc:
+            log.warning("broker.backfill_failed", error=str(exc))
 
     tasks: list[asyncio.Task[None]] = [
         asyncio.create_task(_serve_api(settings.prometheus_port, broker), name="api"),

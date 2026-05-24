@@ -132,6 +132,35 @@ class AgentStateBroker:
         self._on_first_signal: Callable[[dict[str, Any]], None] | None = None
         self._on_first_order: Callable[[dict[str, Any]], None] | None = None
         self._on_kill_switch_change: Callable[[bool, str | None], None] | None = None
+        # Persistence hooks — fire on EVERY signal/order push (not just first)
+        # so DB writers can mirror in-memory state. Errors swallowed silently
+        # so persistence failures never block the trading loop.
+        self._on_signal_persist: Callable[[dict[str, Any]], None] | None = None
+        self._on_order_persist: Callable[[dict[str, Any]], None] | None = None
+
+    def set_persistence_hooks(
+        self,
+        *,
+        signal_hook: Callable[[dict[str, Any]], None] | None = None,
+        order_hook: Callable[[dict[str, Any]], None] | None = None,
+    ) -> None:
+        """Register per-event persistence callbacks. Each fires on every
+        push_signal / push_order — used by the DB writer to mirror state
+        so deploys don't wipe the dashboard."""
+        if signal_hook is not None:
+            self._on_signal_persist = signal_hook
+        if order_hook is not None:
+            self._on_order_persist = order_hook
+
+    def seed_signals(self, signals: list[dict[str, Any]]) -> None:
+        """Replay historical signals into the snapshot on boot — used by
+        the DB backfill so the dashboard isn't blank after Railway restart.
+        Does NOT fire the first-signal hook (those are session-first only)."""
+        self._snapshot.last_signals = list(signals[:50])
+
+    def seed_orders(self, orders: list[dict[str, Any]]) -> None:
+        """Same as seed_signals but for the orders feed."""
+        self._snapshot.last_orders = list(orders[:50])
 
     def set_first_signal_hook(self, cb: Callable[[dict[str, Any]], None]) -> None:
         """Register a callback that fires exactly once — on the first signal
@@ -278,6 +307,13 @@ class AgentStateBroker:
         self._snapshot.last_signals.insert(0, signal)
         self._snapshot.last_signals = self._snapshot.last_signals[:50]
         self._enqueue({"type": "signal", "data": signal})
+        # Persistence — fire EVERY push so DB mirrors in-memory state.
+        persist = self._on_signal_persist
+        if persist is not None:
+            try:
+                persist(signal)
+            except Exception:
+                pass
         if not self._first_signal_fired:
             self._first_signal_fired = True
             cb = self._on_first_signal
@@ -292,6 +328,13 @@ class AgentStateBroker:
         self._snapshot.last_orders.insert(0, order)
         self._snapshot.last_orders = self._snapshot.last_orders[:50]
         self._enqueue({"type": "order", "data": order})
+        # Persistence — fire EVERY push so order transitions land in DB.
+        persist = self._on_order_persist
+        if persist is not None:
+            try:
+                persist(order)
+            except Exception:
+                pass
         if not self._first_order_fired:
             self._first_order_fired = True
             cb = self._on_first_order

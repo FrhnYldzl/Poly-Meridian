@@ -271,3 +271,119 @@ async def fetch_recent_news_signals(
             condition_id, str(window_sec),
         )
         return [dict(r) for r in rows]
+
+
+# ---------- strategy_signals + our_orders persistence ----------
+# These survive Railway restarts so the dashboard backfills from DB on boot
+# instead of going blank every deploy.
+
+
+async def insert_strategy_signal(
+    db: Database,
+    *,
+    ts: datetime,
+    strategy: str,
+    condition_id: str,
+    token_id: str,
+    edge: float,
+    conviction: float,
+    suggested_action: str,
+    rationale: dict[str, Any] | None,
+) -> None:
+    async with db.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO strategy_signals (
+                ts, strategy, condition_id, token_id,
+                edge, conviction, suggested_action, rationale
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb)
+            """,
+            ts, strategy, condition_id, token_id,
+            Decimal(str(edge)), Decimal(str(conviction)),
+            suggested_action,
+            json.dumps(rationale or {}, default=str),
+        )
+
+
+async def fetch_recent_strategy_signals(
+    db: Database, *, limit: int = 50
+) -> list[dict[str, Any]]:
+    """Most-recent strategy signals across all markets. Used by the broker
+    on agent boot to backfill last_signals — otherwise the dashboard is
+    blank after every Railway restart."""
+    async with db.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT ts, strategy, condition_id, token_id,
+                   edge::float8 AS edge, conviction::float8 AS conviction,
+                   suggested_action, rationale
+            FROM strategy_signals
+            ORDER BY ts DESC
+            LIMIT $1
+            """,
+            limit,
+        )
+        return [dict(r) for r in rows]
+
+
+async def upsert_order(
+    db: Database,
+    *,
+    order_id: str,
+    ts_created: datetime,
+    ts_filled: datetime | None,
+    strategy: str,
+    token_id: str,
+    side: str,
+    order_type: str,
+    price: Decimal | None,
+    size: Decimal,
+    filled_size: Decimal,
+    avg_fill_price: Decimal | None,
+    status: str,
+    mode: str,
+) -> None:
+    """Upsert because pipeline pushes the same order_id on every state
+    transition (PENDING → LIVE → FILLED). ON CONFLICT updates the mutable
+    fields (status, fills) and leaves the identity fields alone."""
+    async with db.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO our_orders (
+                order_id, ts_created, ts_filled, strategy, token_id, side,
+                order_type, price, size, filled_size, avg_fill_price, status, mode
+            ) VALUES (
+                $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13
+            )
+            ON CONFLICT (order_id) DO UPDATE SET
+                ts_filled       = EXCLUDED.ts_filled,
+                filled_size     = EXCLUDED.filled_size,
+                avg_fill_price  = EXCLUDED.avg_fill_price,
+                status          = EXCLUDED.status
+            """,
+            order_id, ts_created, ts_filled, strategy, token_id, side,
+            order_type, price, size, filled_size, avg_fill_price, status, mode,
+        )
+
+
+async def fetch_recent_orders(
+    db: Database, *, limit: int = 50
+) -> list[dict[str, Any]]:
+    """Most-recent orders for the dashboard's boot backfill."""
+    async with db.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT order_id, ts_created, ts_filled, strategy, token_id, side,
+                   order_type,
+                   price::float8 AS price,
+                   size::float8 AS size,
+                   filled_size::float8 AS filled_size,
+                   avg_fill_price::float8 AS avg_fill_price,
+                   status, mode
+            FROM our_orders
+            ORDER BY ts_created DESC
+            LIMIT $1
+            """,
+            limit,
+        )
+        return [dict(r) for r in rows]
