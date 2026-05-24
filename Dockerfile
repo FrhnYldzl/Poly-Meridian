@@ -15,7 +15,10 @@ RUN apt-get update \
 # uv for fast, deterministic installs
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
-COPY pyproject.toml ./
+# pyproject.toml declares readme="README.md" — hatchling validates the file
+# exists during `pip install -e .`. Both must be in the build context before
+# the install step.
+COPY pyproject.toml README.md ./
 COPY src ./src
 
 RUN uv pip install --system -e ".[polymarket]"
