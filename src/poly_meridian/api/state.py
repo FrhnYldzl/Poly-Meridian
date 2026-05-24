@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -102,6 +103,22 @@ class AgentStateBroker:
         self._lock = asyncio.Lock()
         self._recent_events: deque[dict[str, Any]] = deque(maxlen=MAX_RECENT)
         self._started_at = time.time()
+        # Session-first hooks — fire once per agent lifetime. Used by the
+        # alerts dispatcher to surface "first paper signal / fill" events.
+        self._first_signal_fired = False
+        self._first_order_fired = False
+        self._on_first_signal: Callable[[dict[str, Any]], None] | None = None
+        self._on_first_order: Callable[[dict[str, Any]], None] | None = None
+        self._on_kill_switch_change: Callable[[bool, str | None], None] | None = None
+
+    def set_first_signal_hook(self, cb: Callable[[dict[str, Any]], None]) -> None:
+        """Register a callback that fires exactly once — on the first signal
+        observed this session. Safe to call before any signals exist."""
+        self._on_first_signal = cb
+
+    def set_first_order_hook(self, cb: Callable[[dict[str, Any]], None]) -> None:
+        """Register a callback that fires exactly once — on the first order."""
+        self._on_first_order = cb
 
     @property
     def snapshot(self) -> Snapshot:
@@ -133,6 +150,18 @@ class AgentStateBroker:
         self._snapshot.kill_switch_reason = reason
         if engaged != prev:
             self._enqueue({"type": "kill_switch", "engaged": engaged, "reason": reason})
+            cb = self._on_kill_switch_change
+            if cb is not None:
+                try:
+                    cb(engaged, reason)
+                except Exception:
+                    pass
+
+    def set_kill_switch_hook(
+        self, cb: Callable[[bool, str | None], None]
+    ) -> None:
+        """Register a callback that fires on every kill-switch state change."""
+        self._on_kill_switch_change = cb
 
     def update_mode(self, mode: str) -> None:
         self._snapshot.mode = mode
@@ -193,12 +222,28 @@ class AgentStateBroker:
         self._snapshot.last_signals.insert(0, signal)
         self._snapshot.last_signals = self._snapshot.last_signals[:50]
         self._enqueue({"type": "signal", "data": signal})
+        if not self._first_signal_fired:
+            self._first_signal_fired = True
+            cb = self._on_first_signal
+            if cb is not None:
+                try:
+                    cb(signal)
+                except Exception:
+                    pass
 
     def push_order(self, order: dict[str, Any]) -> None:
         order = {**order, "ts": order.get("ts") or datetime.now(UTC).isoformat()}
         self._snapshot.last_orders.insert(0, order)
         self._snapshot.last_orders = self._snapshot.last_orders[:50]
         self._enqueue({"type": "order", "data": order})
+        if not self._first_order_fired:
+            self._first_order_fired = True
+            cb = self._on_first_order
+            if cb is not None:
+                try:
+                    cb(order)
+                except Exception:
+                    pass
 
     def push_cluster(self, cluster: dict[str, Any]) -> None:
         # Dedup by condition_id — most-recent wins.

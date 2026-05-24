@@ -23,6 +23,7 @@ import structlog
 import yaml
 from prometheus_client import Counter, Gauge, start_http_server
 
+from poly_meridian.alerts import post_slack_alert, slack_alert_async
 from poly_meridian.api import AgentStateBroker, build_app
 from poly_meridian.execution import PaperExecutor
 from poly_meridian.ingestion import GammaClient, GdeltNewsSource
@@ -617,6 +618,44 @@ async def run() -> None:
     # Expose broker on pipeline so its hooks can push events.
     pipeline.broker = broker  # type: ignore[attr-defined]
 
+    # ---- Slack alert drill (Phase A.3) ----
+    # 4 alert types fired by the broker (no-ops when SLACK_WEBHOOK_URL unset):
+    #   • boot — agent ready
+    #   • kill_switch — engage/disengage transitions
+    #   • first_signal — first paper signal of session
+    #   • first_fill — first paper order of session
+    def _alert_first_signal(sig: dict[str, Any]) -> None:
+        strat = sig.get("strategy", "?")
+        edge = sig.get("edge", 0)
+        cid = (sig.get("condition_id") or "?")[:10]
+        post_slack_alert(
+            f"first paper signal · {strat} · edge={edge:.3f} · cid={cid}…",
+            level="signal",
+        )
+
+    def _alert_first_order(order: dict[str, Any]) -> None:
+        side = order.get("side", "?")
+        token = (order.get("token_id") or "?")[:12]
+        price = order.get("price")
+        size = order.get("size")
+        post_slack_alert(
+            f"first paper fill · {side} {size} @ {price} · token={token}…",
+            level="fill",
+        )
+
+    def _alert_kill_switch(engaged: bool, reason: str | None) -> None:
+        if engaged:
+            post_slack_alert(
+                f"KILL-SWITCH ENGAGED · {reason or 'no reason'}",
+                level="error",
+            )
+        else:
+            post_slack_alert("kill-switch disengaged · trading resumed", level="warn")
+
+    broker.set_first_signal_hook(_alert_first_signal)
+    broker.set_first_order_hook(_alert_first_order)
+    broker.set_kill_switch_hook(_alert_kill_switch)
+
     tasks: list[asyncio.Task[None]] = [
         asyncio.create_task(_serve_api(settings.prometheus_port, broker), name="api"),
         asyncio.create_task(
@@ -649,6 +688,16 @@ async def run() -> None:
         sentiment_enabled=news_proc is not None,
         starting_nav_usd=float(pipeline.ledger.cash),
     )
+    # Boot alert — fire-and-forget Slack post. No-op if SLACK_WEBHOOK_URL unset.
+    try:
+        await slack_alert_async(
+            f"boot · mode={settings.mode} · "
+            f"NAV=${float(pipeline.ledger.cash):,.0f} · "
+            f"sentiment={'on' if news_proc is not None else 'off'}",
+            level="info",
+        )
+    except Exception:
+        pass
 
     await stop_event.wait()
 
@@ -659,6 +708,12 @@ async def run() -> None:
             await t
         except (asyncio.CancelledError, Exception):
             pass
+
+    # Shutdown alert.
+    try:
+        await slack_alert_async("agent shutdown · clean stop", level="warn")
+    except Exception:
+        pass
 
     await close_db()
     await close_cache()
