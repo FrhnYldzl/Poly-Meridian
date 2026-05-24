@@ -61,9 +61,14 @@ class SignalAggregator:
     def __init__(
         self,
         *,
-        conflict_threshold: float = 0.10,
+        conflict_threshold: float = 0.05,
         max_size_pct_per_position: float = 0.05,
     ) -> None:
+        # Lowered from 0.10 — at the original threshold solo strategy signals
+        # with conviction in the 0.05–0.10 band (common from STAT_QUANT
+        # mean_reversion near zscore_threshold) were dropped even though
+        # there was no actual conflict. 0.05 still rejects close two-strategy
+        # ties while letting borderline solo signals through.
         self.conflict_threshold = conflict_threshold
         self.max_size_pct = max_size_pct_per_position
 

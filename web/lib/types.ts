@@ -108,6 +108,12 @@ export interface AgentSnapshot {
   markets_by_category?: Record<string, number>;
   markets_active_total?: number;
   ws_subscribed_total?: number;
+  // Trade-flow funnel: signal → aggregator → risk → order.
+  signals_emitted_total?: number;
+  signals_aggregated_total?: number;
+  risk_accepted_total?: number;
+  risk_rejected_total?: number;
+  orders_submitted_total?: number;
 }
 
 export type StreamEvent =

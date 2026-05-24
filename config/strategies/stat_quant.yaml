@@ -1,24 +1,28 @@
 # StatQuantStrategy — see MASTER_SPEC §14.4.
+#
+# Thresholds tuned for paper mode + Polymarket's low-volume regime.
+# Paper accepts more trades by design so we can validate the order path
+# end-to-end; live thresholds bump back up via promotion checklist.
 
 enabled: true
 
 mean_reversion:
-  zscore_threshold: 2.0
-  min_window: 10
+  zscore_threshold: 1.5         # was 2.0 — more triggers in noisy book
+  min_window: 8                 # was 10 — start firing sooner after WS warm-up
   max_size_pct: 0.02
 
 momentum:
-  lookback_window: 20
-  return_threshold: 0.05
+  lookback_window: 15           # was 20
+  return_threshold: 0.02        # was 0.05 — 2% short-window move is common
   min_volume: 0.0
   max_size_pct: 0.02
 
 vol_breakout:
-  low_vol_threshold: 0.005
-  breakout_multiplier: 2.0
+  low_vol_threshold: 0.01       # was 0.005 — less strict prior-vol gate
+  breakout_multiplier: 1.5      # was 2.0 — smaller breakout still counts
   max_size_pct: 0.02
 
 time_decay:
   horizon_hours_max: 24.0
-  price_deviation_threshold: 0.10
+  price_deviation_threshold: 0.05    # was 0.10 — 5% off 0.50 fair triggers
   max_size_pct: 0.015

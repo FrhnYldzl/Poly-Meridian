@@ -64,10 +64,17 @@ class GammaClient:
                 r.raise_for_status()
                 return r.json()
 
+    # Gamma silently caps responses at 100 even if `limit` is bigger — verified
+    # by curl tests. Using > 100 made our pagination short-circuit after the
+    # first page because `len(chunk) < page_size` triggered the "last page"
+    # break. Anchor to the real ceiling.
+    GAMMA_PAGE_SIZE = 100
+    GAMMA_MAX_PAGES = 100        # 10k markets ceiling — plenty of headroom
+
     async def list_active_markets(
         self,
         *,
-        limit: int = 500,
+        limit: int = 100,
         offset: int = 0,
     ) -> list[dict[str, Any]]:
         """GET /markets?active=true&closed=false. Single page."""
@@ -81,15 +88,21 @@ class GammaClient:
             return list(data["data"])
         return []
 
-    async def iter_active_markets(self, *, page_size: int = 500) -> list[dict[str, Any]]:
-        """Paginate fully through /markets until empty page. Bounded to 50 pages."""
+    async def iter_active_markets(
+        self, *, page_size: int | None = None
+    ) -> list[dict[str, Any]]:
+        """Paginate fully through /markets until empty page. Gamma caps at 100
+        per response regardless of `limit` — keep `page_size` aligned with that
+        cap so our "len(chunk) < page_size means last page" heuristic works.
+        """
+        ps = page_size or self.GAMMA_PAGE_SIZE
         out: list[dict[str, Any]] = []
-        for page in range(50):
-            chunk = await self.list_active_markets(limit=page_size, offset=page * page_size)
+        for page in range(self.GAMMA_MAX_PAGES):
+            chunk = await self.list_active_markets(limit=ps, offset=page * ps)
             if not chunk:
                 break
             out.extend(chunk)
-            if len(chunk) < page_size:
+            if len(chunk) < ps:
                 break
         log.info("gamma.iter_active_markets", count=len(out))
         return out
@@ -98,7 +111,7 @@ class GammaClient:
         return await self._get(f"/markets/{condition_id}")
 
     async def list_active_events(
-        self, *, limit: int = 200, offset: int = 0
+        self, *, limit: int = 100, offset: int = 0
     ) -> list[dict[str, Any]]:
         data = await self._get(
             "/events",
@@ -106,17 +119,20 @@ class GammaClient:
         )
         return data if isinstance(data, list) else list((data or {}).get("data", []))
 
-    async def iter_active_events(self, *, page_size: int = 200) -> list[dict[str, Any]]:
-        """Paginate fully through /events until empty page. Bounded to 25 pages.
-        Used by the category-derivation pipeline — events carry the `tags` array
-        that markets reference for canonical Polymarket categories."""
+    async def iter_active_events(
+        self, *, page_size: int | None = None
+    ) -> list[dict[str, Any]]:
+        """Paginate fully through /events. Same 100-cap quirk as /markets.
+        Used by the category-derivation pipeline — events carry the `tags`
+        array that markets reference for canonical Polymarket categories."""
+        ps = page_size or self.GAMMA_PAGE_SIZE
         out: list[dict[str, Any]] = []
-        for page in range(25):
-            chunk = await self.list_active_events(limit=page_size, offset=page * page_size)
+        for page in range(self.GAMMA_MAX_PAGES):
+            chunk = await self.list_active_events(limit=ps, offset=page * ps)
             if not chunk:
                 break
             out.extend(chunk)
-            if len(chunk) < page_size:
+            if len(chunk) < ps:
                 break
         log.info("gamma.iter_active_events", count=len(out))
         return out

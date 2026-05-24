@@ -20,6 +20,12 @@ export function ActivityPanel({ snapshot }: ActivityPanelProps) {
   const newsSig = snapshot?.news_signals_emitted_total ?? 0;
   const matcher = snapshot?.news_matcher_mode ?? null;
   const scorer = snapshot?.scorer_kind ?? null;
+  // Trade-flow funnel — shows EXACTLY where signals drop on the way to orders.
+  const sigEmit = snapshot?.signals_emitted_total ?? 0;
+  const sigAgg = snapshot?.signals_aggregated_total ?? 0;
+  const riskAcc = snapshot?.risk_accepted_total ?? 0;
+  const riskRej = snapshot?.risk_rejected_total ?? 0;
+  const ordSub = snapshot?.orders_submitted_total ?? 0;
 
   return (
     <Panel
@@ -82,9 +88,39 @@ export function ActivityPanel({ snapshot }: ActivityPanelProps) {
             />
           </dl>
         </div>
+
+        <div className="border-t border-terminal-border pt-3">
+          <div className="mb-2 text-[10px] uppercase tracking-wider text-terminal-dim">
+            Trade funnel
+          </div>
+          <dl className="grid grid-cols-5 gap-1">
+            <Cell label="Signal" value={fmt(sigEmit)} small />
+            <Cell label="Agg" value={fmt(sigAgg)} small />
+            <Cell label="Risk OK" value={fmt(riskAcc)} small />
+            <Cell
+              label="Risk no"
+              value={fmt(riskRej)}
+              small
+              highlight={riskRej > 0}
+            />
+            <Cell
+              label="Orders"
+              value={fmt(ordSub)}
+              small
+              highlight={ordSub > 0}
+            />
+          </dl>
+        </div>
       </div>
     </Panel>
   );
+}
+
+function fmt(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 10_000) return `${(n / 1_000).toFixed(0)}k`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
+  return String(n);
 }
 
 function InfraDot({ label, ok }: { label: string; ok: boolean | undefined }) {
@@ -103,17 +139,20 @@ function Cell({
   label,
   value,
   highlight,
+  small,
 }: {
   label: string;
   value: string;
   highlight?: boolean;
+  small?: boolean;
 }) {
   return (
     <div>
-      <dt className="text-[10px] uppercase tracking-wider text-terminal-dim">{label}</dt>
+      <dt className="text-[9px] uppercase tracking-wider text-terminal-dim">{label}</dt>
       <dd
         className={
-          "numeric mt-0.5 text-base font-semibold " +
+          "numeric mt-0.5 font-semibold " +
+          (small ? "text-xs " : "text-base ") +
           (highlight ? "text-terminal-amber" : "text-terminal-textBright")
         }
       >

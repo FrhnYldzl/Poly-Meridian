@@ -218,6 +218,28 @@ def _counter_total(c: Counter) -> int:
         return 0
 
 
+def _counter_total_filtered(c: Counter, label: str, value_substr: str) -> int:
+    """Sum samples whose `label` value contains `value_substr` (case-insensitive).
+    Used for splitting PM_RISK_DECISION into accept vs reject buckets — risk
+    decisions are emitted as RiskDecision.ACCEPT / .REJECT enums and we want
+    a simple substring match instead of brittle exact-string comparison.
+    """
+    try:
+        total = 0.0
+        needle = value_substr.lower()
+        for fam in c.collect():
+            for s in fam.samples:
+                if not s.name.endswith("_total"):
+                    continue
+                lbl_val = (s.labels or {}).get(label, "")
+                if needle in str(lbl_val).lower():
+                    total += s.value
+            break
+        return int(total)
+    except Exception:
+        return 0
+
+
 async def _broker_refresh_loop(
     stop: asyncio.Event,
     pipeline: Pipeline,
@@ -226,6 +248,12 @@ async def _broker_refresh_loop(
 ) -> None:
     """Pulls portfolio + kill-switch state every 5s and pushes to the broker."""
     # Lazy-import counter refs — they live in different modules.
+    from poly_meridian.pipeline import (
+        PM_ORDER_SUBMITTED,
+        PM_RISK_DECISION,
+        PM_SIGNAL_AGGREGATED,
+        PM_SIGNAL_EMITTED,
+    )
     from poly_meridian.sentiment.news_processor import (
         PM_NEWS_PROCESSED,
         PM_NEWS_SIGNAL_EMITTED,
@@ -300,6 +328,16 @@ async def _broker_refresh_loop(
                 signals_emitted_total=_counter_total(PM_NEWS_SIGNAL_EMITTED),
                 matcher_mode=news_proc.mode if news_proc is not None else None,
                 scorer_kind=scorer_kind,
+            )
+            # Trade-flow funnel: strategy signals → aggregator → risk → orders.
+            # Surfaces the drop-off so we can see WHY an order didn't fire
+            # (aggregator conflict vs risk reject vs no signal at all).
+            broker.update_pipeline_funnel(
+                signals_emitted=_counter_total(PM_SIGNAL_EMITTED),
+                signals_aggregated=_counter_total(PM_SIGNAL_AGGREGATED),
+                risk_accepted=_counter_total_filtered(PM_RISK_DECISION, "decision", "accept"),
+                risk_rejected=_counter_total_filtered(PM_RISK_DECISION, "decision", "reject"),
+                orders_submitted=_counter_total(PM_ORDER_SUBMITTED),
             )
             # Push full snapshot so the UI's SSE subscriber refreshes ticks /
             # markets / NAV / counters every 5s without re-fetching REST.

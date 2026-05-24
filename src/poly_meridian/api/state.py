@@ -65,6 +65,14 @@ class Snapshot:
     markets_by_category: dict[str, int] = field(default_factory=dict)
     markets_active_total: int = 0          # full set returned by Gamma sync
     ws_subscribed_total: int = 0           # subset we actually trade on
+    # Trade-flow funnel: strategy-signal → aggregator → risk → executed order.
+    # Sourced from in-process Prometheus counters; shows EXACTLY where signals
+    # are dropping (aggregator conflict / risk reject / etc).
+    signals_emitted_total: int = 0         # raw strategy signals
+    signals_aggregated_total: int = 0      # passed aggregator (non-conflict)
+    risk_accepted_total: int = 0
+    risk_rejected_total: int = 0
+    orders_submitted_total: int = 0
 
     def asdict(self) -> dict[str, Any]:
         return {
@@ -100,6 +108,11 @@ class Snapshot:
             "markets_by_category": self.markets_by_category,
             "markets_active_total": self.markets_active_total,
             "ws_subscribed_total": self.ws_subscribed_total,
+            "signals_emitted_total": self.signals_emitted_total,
+            "signals_aggregated_total": self.signals_aggregated_total,
+            "risk_accepted_total": self.risk_accepted_total,
+            "risk_rejected_total": self.risk_rejected_total,
+            "orders_submitted_total": self.orders_submitted_total,
         }
 
 
@@ -192,6 +205,28 @@ class AgentStateBroker:
         self._snapshot.markets_by_category = dict(markets_by_category)
         self._snapshot.markets_active_total = markets_active_total
         self._snapshot.ws_subscribed_total = ws_subscribed_total
+
+    def update_pipeline_funnel(
+        self,
+        *,
+        signals_emitted: int | None = None,
+        signals_aggregated: int | None = None,
+        risk_accepted: int | None = None,
+        risk_rejected: int | None = None,
+        orders_submitted: int | None = None,
+    ) -> None:
+        """Push trade-flow funnel counters so the operator can see EXACTLY
+        where signals drop between strategy and executor."""
+        if signals_emitted is not None:
+            self._snapshot.signals_emitted_total = signals_emitted
+        if signals_aggregated is not None:
+            self._snapshot.signals_aggregated_total = signals_aggregated
+        if risk_accepted is not None:
+            self._snapshot.risk_accepted_total = risk_accepted
+        if risk_rejected is not None:
+            self._snapshot.risk_rejected_total = risk_rejected
+        if orders_submitted is not None:
+            self._snapshot.orders_submitted_total = orders_submitted
 
     def update_infra(
         self,
