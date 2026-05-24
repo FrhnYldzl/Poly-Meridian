@@ -141,12 +141,41 @@ async def _bootstrap_books(
     log.info("pipeline.books_bootstrapped", n=bootstrapped)
 
 
+def _counter_total(c: Counter) -> int:
+    """Sum all label-permutations of a Prometheus Counter into one int.
+    Works for both labeled (multiple samples) and unlabeled counters.
+    Stable across prometheus_client versions; uses public .collect() API."""
+    try:
+        total = 0.0
+        for fam in c.collect():
+            for s in fam.samples:
+                if s.name.endswith("_total"):
+                    total += s.value
+            break
+        return int(total)
+    except Exception:
+        return 0
+
+
 async def _broker_refresh_loop(
     stop: asyncio.Event,
     pipeline: Pipeline,
     broker: AgentStateBroker,
+    news_proc: NewsProcessor | None = None,
 ) -> None:
     """Pulls portfolio + kill-switch state every 5s and pushes to the broker."""
+    # Lazy-import counter refs — they live in different modules.
+    from poly_meridian.sentiment.news_processor import (
+        PM_NEWS_PROCESSED,
+        PM_NEWS_SIGNAL_EMITTED,
+    )
+
+    scorer_kind: str | None = None
+    if news_proc is not None:
+        # type(scorer).__name__ → "ClaudeSentimentScorer" → "claude"
+        cls_name = type(news_proc._scorer).__name__  # type: ignore[reportPrivateUsage]
+        scorer_kind = cls_name.replace("SentimentScorer", "").lower() or None
+
     while not stop.is_set():
         try:
             snap = snapshot(pipeline.ledger)
@@ -170,6 +199,16 @@ async def _broker_refresh_loop(
             broker.update_kill_switch(
                 engaged=pipeline.risk.is_kill_switch_engaged(),
                 reason=str(pipeline.risk.kill_switch.reason) if pipeline.risk.kill_switch.engaged else None,
+            )
+            # News funnel telemetry — articles fetched → processed → signals.
+            # Sourced from in-process Prometheus counters so the dashboard
+            # shows the *real* pipeline state without log access.
+            broker.update_news_stats(
+                ingested_total=_counter_total(PM_NEWS_INGESTED),
+                processed_total=_counter_total(PM_NEWS_PROCESSED),
+                signals_emitted_total=_counter_total(PM_NEWS_SIGNAL_EMITTED),
+                matcher_mode=news_proc.mode if news_proc is not None else None,
+                scorer_kind=scorer_kind,
             )
             # Push full snapshot so the UI's SSE subscriber refreshes ticks /
             # markets / NAV / counters every 5s without re-fetching REST.
@@ -543,7 +582,9 @@ async def run() -> None:
         asyncio.create_task(
             _pipeline_loop(stop_event, pipeline, market_cache, log), name="pipeline"
         ),
-        asyncio.create_task(_broker_refresh_loop(stop_event, pipeline, broker), name="broker_refresh"),
+        asyncio.create_task(
+            _broker_refresh_loop(stop_event, pipeline, broker, news_proc), name="broker_refresh"
+        ),
     ]
     if news_proc is not None and db_ok:
         tasks.append(

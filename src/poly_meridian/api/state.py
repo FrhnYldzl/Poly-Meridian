@@ -51,6 +51,13 @@ class Snapshot:
     cache_ok: bool = False
     sentiment_enabled: bool = False
     onchain_enabled: bool = False
+    # News funnel telemetry — shows exactly where the article→signal pipeline
+    # drops off (helps diagnose "0 signals" without Railway log access).
+    news_ingested_total: int = 0
+    news_processed_total: int = 0
+    news_signals_emitted_total: int = 0
+    news_matcher_mode: str | None = None   # "inmem-vector" | "pgvector" | "keyword"
+    scorer_kind: str | None = None         # "claude" | "gemini" | "heuristic"
 
     def asdict(self) -> dict[str, Any]:
         return {
@@ -78,6 +85,11 @@ class Snapshot:
             "cache_ok": self.cache_ok,
             "sentiment_enabled": self.sentiment_enabled,
             "onchain_enabled": self.onchain_enabled,
+            "news_ingested_total": self.news_ingested_total,
+            "news_processed_total": self.news_processed_total,
+            "news_signals_emitted_total": self.news_signals_emitted_total,
+            "news_matcher_mode": self.news_matcher_mode,
+            "scorer_kind": self.scorer_kind,
         }
 
 
@@ -147,6 +159,28 @@ class AgentStateBroker:
             self._snapshot.sentiment_enabled = sentiment_enabled
         if onchain_enabled is not None:
             self._snapshot.onchain_enabled = onchain_enabled
+
+    def update_news_stats(
+        self,
+        *,
+        ingested_total: int | None = None,
+        processed_total: int | None = None,
+        signals_emitted_total: int | None = None,
+        matcher_mode: str | None = None,
+        scorer_kind: str | None = None,
+    ) -> None:
+        """Push pipeline funnel telemetry from the news loops. Each param is
+        optional so callers can update only what they have."""
+        if ingested_total is not None:
+            self._snapshot.news_ingested_total = ingested_total
+        if processed_total is not None:
+            self._snapshot.news_processed_total = processed_total
+        if signals_emitted_total is not None:
+            self._snapshot.news_signals_emitted_total = signals_emitted_total
+        if matcher_mode is not None:
+            self._snapshot.news_matcher_mode = matcher_mode
+        if scorer_kind is not None:
+            self._snapshot.scorer_kind = scorer_kind
 
     def increment_pipeline_tick(self, *, strategies_evaluated: int, arb_seen: int = 0) -> None:
         self._snapshot.pipeline_ticks_total += 1

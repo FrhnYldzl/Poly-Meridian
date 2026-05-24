@@ -66,6 +66,12 @@ export interface AgentSnapshot {
   cache_ok?: boolean;
   sentiment_enabled?: boolean;
   onchain_enabled?: boolean;
+  // News pipeline funnel: GDELT articles → matched → scored → signals emitted.
+  news_ingested_total?: number;
+  news_processed_total?: number;
+  news_signals_emitted_total?: number;
+  news_matcher_mode?: "inmem-vector" | "pgvector" | "keyword" | null;
+  scorer_kind?: "claude" | "gemini" | "heuristic" | null;
 }
 
 export type StreamEvent =

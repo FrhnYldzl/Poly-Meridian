@@ -15,6 +15,11 @@ export function ActivityPanel({ snapshot }: ActivityPanelProps) {
   const arbSeen = snapshot?.arb_opportunities_total ?? 0;
   const uptime = snapshot?.uptime_sec ?? 0;
   const ticksPerMin = uptime > 0 ? (ticks / uptime) * 60 : 0;
+  const newsIn = snapshot?.news_ingested_total ?? 0;
+  const newsProc = snapshot?.news_processed_total ?? 0;
+  const newsSig = snapshot?.news_signals_emitted_total ?? 0;
+  const matcher = snapshot?.news_matcher_mode ?? null;
+  const scorer = snapshot?.scorer_kind ?? null;
 
   return (
     <Panel
@@ -49,6 +54,33 @@ export function ActivityPanel({ snapshot }: ActivityPanelProps) {
           <InfraDot label="Cache" ok={snapshot?.cache_ok} />
           <InfraDot label="Sentiment" ok={snapshot?.sentiment_enabled} />
           <InfraDot label="On-chain" ok={snapshot?.onchain_enabled} />
+        </div>
+
+        <div className="border-t border-terminal-border pt-3">
+          <div className="mb-2 flex items-center justify-between text-[10px] uppercase tracking-wider text-terminal-dim">
+            <span>News funnel</span>
+            <span className="flex gap-1">
+              {matcher ? (
+                <span className="rounded border border-terminal-border px-1 text-terminal-text">
+                  {matcher}
+                </span>
+              ) : null}
+              {scorer ? (
+                <span className="rounded border border-terminal-border px-1 text-terminal-text">
+                  {scorer}
+                </span>
+              ) : null}
+            </span>
+          </div>
+          <dl className="grid grid-cols-3 gap-2">
+            <Cell label="Ingested" value={newsIn.toLocaleString()} />
+            <Cell label="Processed" value={newsProc.toLocaleString()} />
+            <Cell
+              label="Signals"
+              value={newsSig.toLocaleString()}
+              highlight={newsSig > 0}
+            />
+          </dl>
         </div>
       </div>
     </Panel>
