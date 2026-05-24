@@ -2,6 +2,7 @@
 from poly_meridian.sentiment.embeddings import EmbeddingsBackend, OpenAIEmbeddings
 from poly_meridian.sentiment.scorer import (
     ClaudeSentimentScorer,
+    GeminiSentimentScorer,
     HeuristicSentimentScorer,
     SentimentResult,
     SentimentScorer,
@@ -10,6 +11,7 @@ from poly_meridian.sentiment.scorer import (
 __all__ = [
     "ClaudeSentimentScorer",
     "EmbeddingsBackend",
+    "GeminiSentimentScorer",
     "HeuristicSentimentScorer",
     "OpenAIEmbeddings",
     "SentimentResult",

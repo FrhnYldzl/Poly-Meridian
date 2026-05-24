@@ -38,6 +38,7 @@ from poly_meridian.portfolio import Ledger, snapshot
 from poly_meridian.risk import DefaultRiskPolicy, RiskLimits
 from poly_meridian.sentiment import (
     ClaudeSentimentScorer,
+    GeminiSentimentScorer,
     HeuristicSentimentScorer,
     OpenAIEmbeddings,
 )
@@ -418,18 +419,22 @@ def _build_pipeline_and_news_proc() -> tuple[Pipeline, NewsProcessor | None]:
     executor._on_fill = pipeline.on_fill  # type: ignore[attr-defined]
 
     # Build sentiment processor based on available API keys.
-    # - OpenAI key → vector mode (best precision via embeddings + pgvector)
-    # - Anthropic key only → keyword mode (Postgres ILIKE fallback)
-    # - Neither → disabled
+    # Scorer priority: Anthropic Claude > Google Gemini > heuristic keyword.
+    # Matching: OpenAI embeddings (vector mode) when available, else Postgres
+    # ILIKE keyword fallback. Either path activates sentiment_enabled.
     s = get_settings()
     has_openai = bool(s.openai_api_key.get_secret_value())
     has_anthropic = bool(s.anthropic_api_key.get_secret_value())
-    if has_openai or has_anthropic:
+    has_gemini = bool(s.gemini_api_key.get_secret_value())
+    if has_openai or has_anthropic or has_gemini:
         try:
             embeddings = OpenAIEmbeddings() if has_openai else None
-            scorer = (
-                ClaudeSentimentScorer() if has_anthropic else HeuristicSentimentScorer()
-            )
+            if has_anthropic:
+                scorer = ClaudeSentimentScorer()
+            elif has_gemini:
+                scorer = GeminiSentimentScorer()
+            else:
+                scorer = HeuristicSentimentScorer()
             news_proc = NewsProcessor(embeddings=embeddings, scorer=scorer)
         except Exception:
             news_proc = None
