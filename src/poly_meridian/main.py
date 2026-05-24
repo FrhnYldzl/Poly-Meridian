@@ -104,6 +104,42 @@ def _load_smart_wallets() -> list[str]:
     return [w for w in wallets if isinstance(w, str) and w.startswith("0x")]
 
 
+async def _bootstrap_books(
+    pipeline: Pipeline,
+    markets: list[Any],
+    log: Any,
+) -> None:
+    """Fetch initial book snapshots for sampled markets via CLOB REST and
+    populate the local books — WS subscribe only streams deltas thereafter."""
+    from poly_meridian.ingestion.clob_client import ClobClient
+    from poly_meridian.ingestion.normalize import book_snapshot_to_domain
+
+    clob = ClobClient()
+    await clob.start()
+    bootstrapped = 0
+    try:
+        for m in markets:
+            for token_id in (m.yes_token_id, m.no_token_id):
+                try:
+                    snap = await clob.book_snapshot(token_id)
+                except Exception:
+                    continue
+                ob = book_snapshot_to_domain({**snap, "asset_id": token_id})
+                if ob is None:
+                    continue
+                book = pipeline._books.get(token_id)  # type: ignore[reportPrivateUsage]
+                if book is None:
+                    continue
+                book.apply_snapshot({
+                    "bids": [{"price": str(lv.price), "size": str(lv.size)} for lv in ob.bids],
+                    "asks": [{"price": str(lv.price), "size": str(lv.size)} for lv in ob.asks],
+                })
+                bootstrapped += 1
+    finally:
+        await clob.stop()
+    log.info("pipeline.books_bootstrapped", n=bootstrapped)
+
+
 async def _broker_refresh_loop(
     stop: asyncio.Event,
     pipeline: Pipeline,
@@ -277,13 +313,18 @@ async def _pipeline_loop(
                 ws_source = ClobWebsocketSource(asset_ids=sorted(new_tokens))
                 await ws_source.start()
                 subscribed_tokens = new_tokens
-                # Attach freshly-created books from the WS source.
+                # Attach books from the WS source.
                 for tid in new_tokens:
                     book = ws_source.book(tid)
                     if book is not None:
                         pipeline.attach_book(tid, book)
                 PM_WS_BOOKS.set(len(new_tokens))
                 log.info("pipeline.ws_resubscribed", n=len(new_tokens))
+
+                # Bootstrap initial book snapshots via REST — Polymarket WS
+                # only streams *deltas* after subscribe, not initial state.
+                # Without this, books stay empty until the next trade hits.
+                await _bootstrap_books(pipeline, sampled, log)
 
             # Hydrate sentiment cache for sampled markets.
             try:
@@ -299,9 +340,15 @@ async def _pipeline_loop(
                 log.debug("pipeline.sentiment_hydrate_skip", error=str(exc))
 
             # Tick each market once per cycle.
+            n_strategies = sum(1 for s in (pipeline.arbitrage, pipeline.sentiment, pipeline.smart_money) if s and getattr(s, "enabled", False))
+            broker = getattr(pipeline, "broker", None)
+            if broker is not None:
+                broker.update_markets_watched(len(sampled))
             for m in sampled:
                 try:
                     order = await pipeline.tick(m)
+                    if broker is not None:
+                        broker.increment_pipeline_tick(strategies_evaluated=n_strategies)
                     if order is not None:
                         log.info(
                             "pipeline.order",

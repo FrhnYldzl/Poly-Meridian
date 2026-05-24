@@ -41,6 +41,11 @@ class Snapshot:
     smart_money_clusters: list[dict[str, Any]] = field(default_factory=list)
     markets_watched: int = 0
     uptime_sec: float = 0.0
+    # Pipeline activity counters so the UI shows life even when no signals fire.
+    pipeline_ticks_total: int = 0
+    strategies_evaluated_total: int = 0
+    arb_opportunities_total: int = 0   # raw_edge > 0, even if below threshold
+    last_book_update_ts: str | None = None
 
     def asdict(self) -> dict[str, Any]:
         return {
@@ -60,6 +65,10 @@ class Snapshot:
             "smart_money_clusters": self.smart_money_clusters,
             "markets_watched": self.markets_watched,
             "uptime_sec": self.uptime_sec,
+            "pipeline_ticks_total": self.pipeline_ticks_total,
+            "strategies_evaluated_total": self.strategies_evaluated_total,
+            "arb_opportunities_total": self.arb_opportunities_total,
+            "last_book_update_ts": self.last_book_update_ts,
         }
 
 
@@ -112,6 +121,12 @@ class AgentStateBroker:
 
     def update_markets_watched(self, count: int) -> None:
         self._snapshot.markets_watched = count
+
+    def increment_pipeline_tick(self, *, strategies_evaluated: int, arb_seen: int = 0) -> None:
+        self._snapshot.pipeline_ticks_total += 1
+        self._snapshot.strategies_evaluated_total += strategies_evaluated
+        self._snapshot.arb_opportunities_total += arb_seen
+        self._snapshot.last_book_update_ts = datetime.now(UTC).isoformat()
 
     def push_signal(self, signal: dict[str, Any]) -> None:
         signal = {**signal, "ts": signal.get("ts") or datetime.now(UTC).isoformat()}

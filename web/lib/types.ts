@@ -58,6 +58,10 @@ export interface AgentSnapshot {
   smart_money_clusters: SmartMoneyCluster[];
   markets_watched: number;
   uptime_sec: number;
+  pipeline_ticks_total?: number;
+  strategies_evaluated_total?: number;
+  arb_opportunities_total?: number;
+  last_book_update_ts?: string | null;
 }
 
 export type StreamEvent =

@@ -125,7 +125,14 @@ class GdeltNewsSource(IngestionSource):
             with attempt:
                 r = await self._client.get(GDELT_DOC_API, params=params)
                 r.raise_for_status()
-                data = r.json() if r.text else {}
+                # GDELT sometimes returns an empty body or non-JSON HTML on
+                # rate limit / no results. Guard against both.
+                if not r.text or not r.text.strip().startswith("{"):
+                    return []
+                try:
+                    data = r.json()
+                except Exception:
+                    return []
                 return list(data.get("articles", []))
         return []
 

@@ -48,6 +48,7 @@ export function HeaderBar({ snapshot, connected, lastUpdateMs, onKillSwitchToggl
           />
           <StatBlock label="OPEN POS" value={String(snapshot?.open_position_count ?? 0)} />
           <StatBlock label="MARKETS" value={String(snapshot?.markets_watched ?? 0)} />
+          <StatBlock label="TICKS" value={String(snapshot?.pipeline_ticks_total ?? 0)} />
         </div>
 
         <div className="flex items-center gap-2">
