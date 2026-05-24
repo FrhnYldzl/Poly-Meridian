@@ -1,6 +1,8 @@
 import type { AgentSnapshot } from "./types";
 
-const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+// Empty string → same-origin (production: FastAPI serves both UI + API).
+// In local dev, set NEXT_PUBLIC_API_URL=http://localhost:8000 in web/.env.local.
+const API = process.env.NEXT_PUBLIC_API_URL ?? "";
 
 export async function fetchState(): Promise<AgentSnapshot> {
   const res = await fetch(`${API}/api/state`, { cache: "no-store" });

@@ -1,17 +1,17 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
-  output: "standalone",
+  // Static HTML/JS export — the agent's FastAPI process serves the build
+  // from /app/static, so the whole dashboard is one Railway service.
+  output: "export",
+  // SPA-style: each route gets its own index.html.
+  trailingSlash: true,
+  // Disable next/image optimization — incompatible with static export.
+  images: { unoptimized: true },
+  // Public env: empty string means "same origin" — fetches go to /api/*
+  // relative to the page, which the agent serves at the same host.
   env: {
-    NEXT_PUBLIC_API_URL: process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000",
-  },
-  async rewrites() {
-    return [
-      {
-        source: "/api/agent/:path*",
-        destination: `${process.env.AGENT_API_URL || "http://localhost:8000"}/api/:path*`,
-      },
-    ];
+    NEXT_PUBLIC_API_URL: process.env.NEXT_PUBLIC_API_URL || "",
   },
 };
 

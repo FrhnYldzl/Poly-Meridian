@@ -1,20 +1,33 @@
-"""FastAPI app for the operator dashboard. Mounted on port 8000 by main.py."""
+"""FastAPI app for the operator dashboard. Mounted on port 8000 by main.py.
+
+Two surfaces in one process:
+  - REST + SSE under /api/* + /health  (agent state)
+  - Static Next.js dashboard at /       (same-origin, no CORS dance)
+
+The Docker build copies `web/out/` into `/app/static` so the dashboard
+ships in the same image as the agent — single Railway service, one URL.
+"""
 from __future__ import annotations
 
 import asyncio
 import json
+import os
 from collections.abc import AsyncIterator
+from pathlib import Path
 from typing import Any
 
 import structlog
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 
 from poly_meridian.api.state import AgentStateBroker
 from poly_meridian.settings import get_settings
 
 log = structlog.get_logger("poly_meridian.api.app")
+
+STATIC_DIR = Path(os.environ.get("STATIC_DIR", "/app/static"))
 
 
 def build_app(broker: AgentStateBroker) -> FastAPI:
@@ -25,7 +38,7 @@ def build_app(broker: AgentStateBroker) -> FastAPI:
         openapi_url="/api/openapi.json",
     )
 
-    # CORS for local dev — UI runs on :3000, API on :8000.
+    # CORS still useful for local dev where the UI may be on :3001.
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
@@ -33,50 +46,6 @@ def build_app(broker: AgentStateBroker) -> FastAPI:
         allow_methods=["GET", "POST"],
         allow_headers=["*"],
     )
-
-    @app.get("/", response_class=HTMLResponse)
-    async def root() -> str:
-        """Friendly landing — the agent serves JSON APIs, not the UI.
-        Tells visitors where to find the dashboard + docs."""
-        snap = broker.snapshot
-        uptime_h = snap.uptime_sec / 3600
-        return f"""<!doctype html>
-<html lang="en"><head><meta charset="utf-8"/>
-<title>Poly Meridian — Agent API</title>
-<style>
-  body{{background:#0a0a0b;color:#e5e5e7;font-family:ui-monospace,Menlo,monospace;
-       margin:0;padding:48px;line-height:1.6;font-size:13px}}
-  h1{{color:#ff9e0a;font-size:18px;letter-spacing:.2em;text-transform:uppercase;margin:0 0 24px}}
-  .stat{{display:inline-block;margin-right:24px}}.lbl{{color:#5c5c63;font-size:11px;text-transform:uppercase;letter-spacing:.1em}}
-  .v{{color:#fafafa;font-size:18px;font-weight:600}}.amber{{color:#ff9e0a}}
-  ul{{padding-left:18px;color:#22d3ee}}a{{color:#22d3ee;text-decoration:none}}
-  hr{{border:0;border-top:1px solid #262629;margin:24px 0}}
-  pre{{background:#111114;padding:12px;border:1px solid #262629;border-radius:4px;overflow-x:auto}}
-</style></head>
-<body>
-<h1>POLY • MERIDIAN — Agent API</h1>
-<div>
-  <div class="stat"><div class="lbl">Mode</div><div class="v amber">{snap.mode}</div></div>
-  <div class="stat"><div class="lbl">NAV</div><div class="v">${snap.nav_usd:,.0f}</div></div>
-  <div class="stat"><div class="lbl">Markets</div><div class="v">{snap.markets_watched}</div></div>
-  <div class="stat"><div class="lbl">Ticks</div><div class="v">{snap.pipeline_ticks_total:,}</div></div>
-  <div class="stat"><div class="lbl">Uptime</div><div class="v">{uptime_h:.1f}h</div></div>
-  <div class="stat"><div class="lbl">Kill-switch</div><div class="v" style="color:{'#ef4444' if snap.kill_switch_engaged else '#22c55e'}">{('ENGAGED' if snap.kill_switch_engaged else 'ARMED')}</div></div>
-</div>
-<hr/>
-<p>This is the <b>agent API</b>, not the dashboard. The Bloomberg-style
-operator UI lives in a separate Railway service. Useful endpoints here:</p>
-<ul>
-  <li><a href="/health">/health</a> — liveness probe</li>
-  <li><a href="/api/state">/api/state</a> — full snapshot JSON</li>
-  <li><a href="/api/settings">/api/settings</a> — effective config</li>
-  <li><a href="/api/stream">/api/stream</a> — Server-Sent Events feed</li>
-  <li><a href="/api/docs">/api/docs</a> — Swagger / OpenAPI docs</li>
-</ul>
-<p>To open the dashboard, deploy the <code>web</code> service (Next.js,
-root directory <code>web/</code>) with <code>NEXT_PUBLIC_API_URL</code> set to this URL.
-See <a href="https://github.com/FrhnYldzl/Poly-Meridian/blob/main/docs/railway-deploy.md">docs/railway-deploy.md</a>.</p>
-</body></html>"""
 
     @app.get("/health")
     async def health() -> dict[str, str]:
@@ -113,7 +82,6 @@ See <a href="https://github.com/FrhnYldzl/Poly-Meridian/blob/main/docs/railway-d
             q = await broker.subscribe()
             heartbeat_task = asyncio.create_task(_heartbeat_loop(broker))
             try:
-                # Send initial snapshot.
                 init = {"type": "snapshot", "data": broker.snapshot.asdict()}
                 yield _sse_event(init)
                 while True:
@@ -141,9 +109,49 @@ See <a href="https://github.com/FrhnYldzl/Poly-Meridian/blob/main/docs/railway-d
             },
         )
 
-    @app.exception_handler(404)
-    async def not_found(_request: Any, _exc: Any) -> JSONResponse:
-        return JSONResponse(status_code=404, content={"error": "not_found"})
+    # ----- Static dashboard mount -----
+    # `next build` with output: "export" writes to /web/out, copied to
+    # /app/static by the Dockerfile.
+    if STATIC_DIR.exists() and (STATIC_DIR / "index.html").exists():
+        # Serve Next.js's _next assets at /_next so chunk URLs resolve.
+        next_assets = STATIC_DIR / "_next"
+        if next_assets.exists():
+            app.mount("/_next", StaticFiles(directory=next_assets), name="next_assets")
+
+        @app.get("/", include_in_schema=False)
+        async def root_index() -> FileResponse:
+            return FileResponse(STATIC_DIR / "index.html")
+
+        # SPA fallback — any unmatched non-API route returns the matching
+        # exported .html if it exists, otherwise index.html.
+        @app.get("/{full_path:path}", include_in_schema=False)
+        async def spa_fallback(full_path: str) -> FileResponse:
+            if full_path.startswith(("api/", "health", "_next/")):
+                # Let FastAPI's own 404 handle it.
+                return JSONResponse(status_code=404, content={"error": "not_found"})  # type: ignore[return-value]
+            # Try exact .html (e.g. /markets → /markets.html or /markets/index.html)
+            candidate_dir = STATIC_DIR / full_path / "index.html"
+            candidate_html = STATIC_DIR / f"{full_path}.html"
+            if candidate_dir.exists():
+                return FileResponse(candidate_dir)
+            if candidate_html.exists():
+                return FileResponse(candidate_html)
+            # Asset path (e.g. /favicon.ico)
+            asset = STATIC_DIR / full_path
+            if asset.is_file():
+                return FileResponse(asset)
+            # Fallback to root index (dashboard SPA handles the route client-side)
+            return FileResponse(STATIC_DIR / "index.html")
+
+        log.info("api.static_mounted", path=str(STATIC_DIR))
+    else:
+        # No static build available — keep the JSON-friendly 404 so anyone
+        # hitting / still gets a useful response in API-only deployments.
+        @app.exception_handler(404)
+        async def not_found(_request: Any, _exc: Any) -> JSONResponse:
+            return JSONResponse(status_code=404, content={"error": "not_found"})
+
+        log.info("api.static_missing", path=str(STATIC_DIR))
 
     return app
 

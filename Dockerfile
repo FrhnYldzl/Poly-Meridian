@@ -1,5 +1,18 @@
 # syntax=docker/dockerfile:1.7
-FROM python:3.12-slim AS base
+
+# ---------- Stage 1: build the Next.js dashboard to static HTML ----------
+FROM node:22-alpine AS web-builder
+
+WORKDIR /web
+COPY web/package.json web/package-lock.json* web/.npmrc* ./
+RUN npm install --legacy-peer-deps
+
+COPY web/ ./
+RUN npm run build
+# `next build` with `output: "export"` writes static HTML/JS to /web/out
+
+# ---------- Stage 2: the Python agent + bundled static UI ----------
+FROM python:3.12-slim AS app
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -15,9 +28,7 @@ RUN apt-get update \
 # uv for fast, deterministic installs
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
-# pyproject.toml declares readme="README.md" — hatchling validates the file
-# exists during `pip install -e .`. Both must be in the build context before
-# the install step.
+# pyproject + README needed for hatchling to validate metadata.
 COPY pyproject.toml README.md ./
 COPY src ./src
 
@@ -26,14 +37,15 @@ RUN uv pip install --system -e ".[polymarket]"
 COPY config ./config
 COPY scripts ./scripts
 
-ENV MODE=paper \
-    PORT=8000
+# Bring in the built dashboard.
+COPY --from=web-builder /web/out /app/static
 
-# Railway routes traffic to whatever port the platform assigns via $PORT.
-# Our settings.py reads $PORT with fallback to $PROMETHEUS_PORT → 8000.
+ENV MODE=paper \
+    PORT=8000 \
+    STATIC_DIR=/app/static
+
 EXPOSE 8000
 
-# Healthcheck so Railway / Docker can confirm the agent is alive.
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=5)" || exit 1
 
