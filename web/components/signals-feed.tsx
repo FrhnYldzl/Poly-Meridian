@@ -33,6 +33,7 @@ function SignalRow({ s }: { s: Signal }) {
       : s.suggested_action === "BUY_NO"
         ? "text-terminal-red"
         : "text-terminal-dim";
+  const stratBase = s.strategy.split(".")[0];
   const stratColor =
     {
       arbitrage: "text-terminal-cyan",
@@ -40,16 +41,38 @@ function SignalRow({ s }: { s: Signal }) {
       smart_money: "text-terminal-amber",
       stat_quant: "text-terminal-yellow",
       fundamentals: "text-terminal-green",
-    }[s.strategy as keyof object] ?? "text-terminal-text";
+    }[stratBase as keyof object] ?? "text-terminal-text";
+  // Compact rationale: pull first 3 numeric/short fields for the tooltip.
+  const rationaleStr = s.rationale
+    ? Object.entries(s.rationale)
+        .slice(0, 5)
+        .map(([k, v]) => `${k}=${typeof v === "number" ? v.toFixed(3) : String(v).slice(0, 24)}`)
+        .join(" · ")
+    : "";
+  const tipBody = [
+    s.market_question ? `market: ${s.market_question}` : null,
+    `condition: ${s.condition_id}`,
+    `conviction: ${(s.conviction ?? 0).toFixed(2)}`,
+    rationaleStr ? `why: ${rationaleStr}` : null,
+  ]
+    .filter(Boolean)
+    .join("\n");
 
   return (
-    <li className="grid grid-cols-[80px_120px_60px_1fr_60px] items-center gap-3 px-3 py-1.5 hover:bg-terminal-surfaceAlt/50">
+    <li
+      className="grid grid-cols-[72px_120px_56px_1fr_56px] items-center gap-3 px-3 py-1.5 hover:bg-terminal-surfaceAlt/50"
+      title={tipBody}
+    >
       <span className="text-terminal-dim">{relativeTime(s.ts)}</span>
       <span className={cn("truncate font-semibold uppercase tracking-wider", stratColor)}>
         {s.strategy}
       </span>
-      <span className={cn("font-semibold uppercase", actionTone)}>{s.suggested_action.replace("_", " ")}</span>
-      <span className="truncate text-terminal-text">{s.condition_id.slice(0, 18)}…</span>
+      <span className={cn("font-semibold uppercase", actionTone)}>
+        {s.suggested_action.replace("_", " ")}
+      </span>
+      <span className="truncate text-terminal-text">
+        {s.market_question ?? `${s.condition_id.slice(0, 18)}…`}
+      </span>
       <span className="numeric text-right text-terminal-amber">
         {formatPct(s.edge, { showSign: true, precision: 1 })}
       </span>

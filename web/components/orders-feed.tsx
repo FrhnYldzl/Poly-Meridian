@@ -45,7 +45,11 @@ export function OrdersFeed({ orders }: OrdersFeedProps) {
 }
 
 function Row({ o }: { o: OrderRow }) {
-  const sideTone = o.side === "BUY" ? "text-terminal-green" : "text-terminal-red";
+  const sideTone =
+    o.side === "BUY" || o.side?.toString().endsWith(".BUY")
+      ? "text-terminal-green"
+      : "text-terminal-red";
+  const statusRaw = (o.status ?? "").toString().replace(/^OrderStatus\./, "");
   const statusTone =
     {
       FILLED: "text-terminal-green",
@@ -54,16 +58,41 @@ function Row({ o }: { o: OrderRow }) {
       PENDING: "text-terminal-dim",
       CANCELLED: "text-terminal-dim",
       REJECTED: "text-terminal-red",
-    }[o.status as keyof object] ?? "text-terminal-text";
+    }[statusRaw as keyof object] ?? "text-terminal-text";
+  // Tooltip captures full attribution: market + edge + conviction + contributors
+  const tipBody = [
+    o.market_question ? `market: ${o.market_question}` : null,
+    o.condition_id ? `condition: ${o.condition_id}` : null,
+    o.contributors?.length
+      ? `contributors: ${o.contributors.join(", ")}`
+      : null,
+    o.edge != null ? `edge: ${o.edge.toFixed(4)}` : null,
+    o.conviction != null ? `conviction: ${o.conviction.toFixed(2)}` : null,
+    o.size_pct != null ? `size_pct: ${(o.size_pct * 100).toFixed(2)}%` : null,
+    `order_id: ${o.order_id}`,
+  ]
+    .filter(Boolean)
+    .join("\n");
   return (
-    <tr className="border-t border-terminal-border/60 hover:bg-terminal-surfaceAlt/50">
+    <tr
+      className="border-t border-terminal-border/60 hover:bg-terminal-surfaceAlt/50"
+      title={tipBody}
+    >
       <td className="px-3 py-1.5 text-terminal-dim">{relativeTime(o.ts)}</td>
-      <td className="px-3 py-1.5 text-terminal-amber">{o.strategy}</td>
-      <td className={cn("px-3 py-1.5 font-semibold", sideTone)}>{o.side}</td>
+      <td className="px-3 py-1.5 text-terminal-amber">
+        {o.strategy?.toString().split(".")[0] ?? "?"}
+      </td>
+      <td className={cn("px-3 py-1.5 font-semibold", sideTone)}>
+        {o.side?.toString().split(".").pop()}
+      </td>
       <td className="numeric px-3 py-1.5 text-right">{o.price?.toFixed(4) ?? "—"}</td>
       <td className="numeric px-3 py-1.5 text-right">{o.size?.toFixed(2) ?? "—"}</td>
-      <td className={cn("px-3 py-1.5 uppercase tracking-wider", statusTone)}>{o.status}</td>
-      <td className="px-3 py-1.5 text-terminal-dim">{o.mode}</td>
+      <td className={cn("px-3 py-1.5 uppercase tracking-wider", statusTone)}>
+        {statusRaw}
+      </td>
+      <td className="px-3 py-1.5 text-terminal-dim">
+        {o.mode?.toString().split(".").pop()}
+      </td>
     </tr>
   );
 }

@@ -151,6 +151,26 @@ class Pipeline:
             if s is not None:
                 signals.append(s)
                 PM_SIGNAL_EMITTED.labels(strategy=strat.name).inc()
+                # Surface the signal on the operator dashboard with full
+                # rationale so the user can SEE what fired and WHY.
+                broker = getattr(self, "broker", None)
+                if broker is not None:
+                    try:
+                        broker.push_signal({
+                            "ts": s.ts.isoformat(),
+                            "strategy": s.strategy,
+                            "condition_id": s.condition_id,
+                            "token_id": s.token_id,
+                            "edge": s.edge,
+                            "conviction": s.conviction,
+                            # Use .value so the UI gets clean "BUY_YES"
+                            # rather than "Action.BUY_YES".
+                            "suggested_action": s.suggested_action.value,
+                            "rationale": s.rationale,
+                            "market_question": market.question,
+                        })
+                    except Exception:
+                        pass
 
         if not signals:
             return None
@@ -180,6 +200,35 @@ class Pipeline:
 
         order = await self.router.route(trade)
         PM_ORDER_SUBMITTED.labels(side=str(order.side), mode=str(order.mode)).inc()
+        # Surface the order on the dashboard. Use contributors from the agg
+        # so the UI shows the *combined* strategy attribution rather than just
+        # the last leg name.
+        broker = getattr(self, "broker", None)
+        if broker is not None:
+            try:
+                broker.push_order({
+                    "ts": (order.ts_filled or order.ts_created).isoformat(),
+                    "order_id": order.order_id,
+                    "strategy": order.strategy,
+                    "contributors": list(agg.contributors),
+                    "condition_id": agg.condition_id,
+                    "token_id": order.token_id,
+                    # .value strips the "Side." / "OrderStatus." enum prefix.
+                    "side": order.side.value,
+                    "status": order.status.value,
+                    "price": float(order.price) if order.price is not None else None,
+                    "size": float(order.size),
+                    "filled_size": float(order.filled_size),
+                    "avg_fill_price": float(order.avg_fill_price)
+                        if order.avg_fill_price is not None else None,
+                    "mode": order.mode.value,
+                    "edge": agg.edge,
+                    "conviction": agg.conviction,
+                    "size_pct": agg.size_pct,
+                    "market_question": market.question,
+                })
+            except Exception:
+                pass
         return order
 
     async def on_fill(

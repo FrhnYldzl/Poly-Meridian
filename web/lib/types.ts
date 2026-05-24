@@ -1,34 +1,50 @@
 export type AgentMode = "paper" | "live-conservative" | "live-normal" | "kill";
 
+export interface PositionEntry {
+  strategy: string;
+  entry_price: number;
+  entry_ts: string;
+}
+
 export interface Position {
   token_id: string;
   qty: number;
   avg_cost: number;
   last_mark: number;
   unrealized_pnl: number;
+  entry?: PositionEntry | null;
 }
 
 export interface Signal {
   ts: string;
   strategy: string;
   condition_id: string;
+  token_id?: string;
   edge: number;
   conviction: number;
   suggested_action: "BUY_YES" | "BUY_NO" | "SELL" | "HOLD" | "EXIT";
   rationale?: Record<string, unknown>;
+  market_question?: string;
 }
 
 export interface OrderRow {
   ts: string;
   order_id: string;
   strategy: string;
+  contributors?: string[];
+  condition_id?: string;
   token_id: string;
   side: "BUY" | "SELL";
   status: string;
   price?: number;
   size?: number;
   filled_size?: number;
+  avg_fill_price?: number | null;
   mode: string;
+  edge?: number;
+  conviction?: number;
+  size_pct?: number;
+  market_question?: string;
 }
 
 export interface SmartMoneyCluster {

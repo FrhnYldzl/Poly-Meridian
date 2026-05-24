@@ -182,6 +182,21 @@ async def _broker_refresh_loop(
     while not stop.is_set():
         try:
             snap = snapshot(pipeline.ledger)
+            # Build a fast lookup: token_id -> most-recent BUY entry in the
+            # ledger. This recovers strategy attribution for positions that
+            # were opened before broker.push_order was wired (Phase B.1) —
+            # the ledger keeps every fill in memory regardless.
+            entry_by_token: dict[str, dict[str, Any]] = {}
+            for entry in reversed(pipeline.ledger.entries()):
+                if entry.token_id in entry_by_token:
+                    continue
+                if entry.qty <= 0:  # SELL fills have negative signed qty
+                    continue
+                entry_by_token[entry.token_id] = {
+                    "strategy": entry.strategy,
+                    "entry_price": float(entry.price),
+                    "entry_ts": entry.ts.isoformat(),
+                }
             broker.update_portfolio(
                 nav_usd=snap.nav_usd,
                 cash_usd=snap.cash_usd,
@@ -195,6 +210,9 @@ async def _broker_refresh_loop(
                         "avg_cost": float(p.avg_cost),
                         "last_mark": float(p.last_mark),
                         "unrealized_pnl": float(p.qty * (p.last_mark - p.avg_cost)),
+                        # Entry attribution — strategy + opening price + ts.
+                        # None for positions opened before this fix shipped.
+                        "entry": entry_by_token.get(p.token_id),
                     }
                     for p in pipeline.ledger.positions()
                 ],
