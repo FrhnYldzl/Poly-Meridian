@@ -93,6 +93,97 @@ class HeuristicSentimentScorer(SentimentScorer):
         return SentimentResult(sentiment, impact, direction, "heuristic")
 
 
+class GeminiSentimentScorer(SentimentScorer):
+    """Google Gemini scorer. Free-tier-friendly alternative to Claude.
+
+    Uses `gemini-2.5-flash` for fast structured-JSON sentiment scoring.
+    Falls back to HeuristicSentimentScorer on any API failure.
+    """
+
+    _SYSTEM_PROMPT = (
+        "You are a financial sentiment analyst evaluating news articles for a "
+        "prediction-market trading agent. Return STRICT JSON only, no prose:\n"
+        '{"sentiment": <-1..1>, "impact": <0..1>, '
+        '"direction": "YES"|"NO"|"NEUTRAL", "rationale": "..."}'
+    )
+
+    def __init__(self, *, model: str = "gemini-2.5-flash", api_key: str | None = None) -> None:
+        s = get_settings()
+        self._model = model
+        self._key = api_key or s.gemini_api_key.get_secret_value()
+        self._client: object | None = None
+        self._fallback = HeuristicSentimentScorer()
+
+    def _ensure_client(self) -> object:
+        if self._client is None:
+            try:
+                from google import genai  # type: ignore[import-not-found]
+            except ImportError as exc:
+                raise RuntimeError(
+                    "google-genai not installed. Install via `uv pip install -e \".[llm]\"`."
+                ) from exc
+            if not self._key:
+                raise RuntimeError("GEMINI_API_KEY not set; falling back to heuristic.")
+            self._client = genai.Client(api_key=self._key)
+        return self._client
+
+    async def score(
+        self,
+        *,
+        article_title: str,
+        article_body: str | None,
+        market_question: str,
+    ) -> SentimentResult:
+        try:
+            client = self._ensure_client()
+        except RuntimeError as exc:
+            log.warning("scorer.gemini.fallback_heuristic", reason=str(exc))
+            return await self._fallback.score(
+                article_title=article_title,
+                article_body=article_body,
+                market_question=market_question,
+            )
+
+        user = (
+            f"Market question: {market_question}\n\n"
+            f"Article title: {article_title}\n"
+            f"Article body: {(article_body or '')[:1500]}\n\n"
+            f"{self._SYSTEM_PROMPT}"
+        )
+        try:
+            async for attempt in AsyncRetrying(
+                retry=retry_if_exception_type(Exception),
+                stop=stop_after_attempt(3),
+                wait=wait_exponential(multiplier=0.5, min=0.5, max=4),
+                reraise=True,
+            ):
+                with attempt:
+                    # The SDK is sync; run in thread pool.
+                    import asyncio as _asyncio
+                    loop = _asyncio.get_running_loop()
+                    resp = await loop.run_in_executor(
+                        None,
+                        lambda: client.models.generate_content(  # type: ignore[attr-defined]
+                            model=self._model,
+                            contents=user,
+                            config={"response_mime_type": "application/json"},
+                        ),
+                    )
+                    text = getattr(resp, "text", "") or ""
+                    parsed = _parse_json_result(text)
+                    if parsed is None:
+                        raise ValueError(f"non-JSON response: {text[:120]}")
+                    return SentimentResult(**parsed).clip()
+        except Exception as exc:
+            log.warning("scorer.gemini_failed", error=str(exc))
+            return await self._fallback.score(
+                article_title=article_title,
+                article_body=article_body,
+                market_question=market_question,
+            )
+        return SentimentResult(0.0, 0.0, "NEUTRAL", "unreachable")
+
+
 class ClaudeSentimentScorer(SentimentScorer):
     """Production scorer — Anthropic Claude. Cheap, fast, structured output.
 

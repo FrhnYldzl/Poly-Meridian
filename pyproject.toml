@@ -44,6 +44,7 @@ polymarket = [
 llm = [
     "openai>=1.40",
     "anthropic>=0.40",
+    "google-genai>=0.3",
 ]
 ml = [
     "sentence-transformers>=3.0",

@@ -43,8 +43,24 @@ class Settings(BaseSettings):
     x_bearer_token: SecretStr = Field(default=SecretStr(""))
 
     # --- LLM ---
-    openai_api_key: SecretStr = Field(default=SecretStr(""))
-    anthropic_api_key: SecretStr = Field(default=SecretStr(""))
+    # Multiple aliases let operators name vars per-project on shared accounts
+    # (e.g. ANTHROPIC_API_KEY_POLLY_AGENT to avoid collisions across services).
+    openai_api_key: SecretStr = Field(
+        default=SecretStr(""),
+        validation_alias=AliasChoices("OPENAI_API_KEY", "OPENAI_API_KEY_POLLY_AGENT"),
+    )
+    anthropic_api_key: SecretStr = Field(
+        default=SecretStr(""),
+        validation_alias=AliasChoices(
+            "ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY_POLLY_AGENT"
+        ),
+    )
+    gemini_api_key: SecretStr = Field(
+        default=SecretStr(""),
+        validation_alias=AliasChoices(
+            "GEMINI_API_KEY", "GOOGLE_API_KEY", "GEMINI_API_KEY_POLLY_AGENT"
+        ),
+    )
     embedding_model: str = "text-embedding-3-small"   # OpenAI, 1536-d
     sentiment_model: str = "claude-haiku-4-5-20251001"
     sentiment_batch_size: int = 10
