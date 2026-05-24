@@ -16,6 +16,63 @@ from typing import Any
 from poly_meridian.domain import Market, OrderBook, OrderBookLevel
 
 
+# Gamma's /markets endpoint returns `category=None` for everything. The real
+# categorization lives in /events as a `tags` array (e.g. ["Politics",
+# "Macron", "France", "2025 Predictions"]). We pick the *first* canonical
+# Polymarket category in the priority order below — Sports beats Business
+# beats Politics, so "Sports + Business + Politics" → "Sports". This matches
+# how Polymarket itself displays markets.
+_CANONICAL_CATEGORIES: tuple[str, ...] = (
+    "Sports",
+    "Crypto",
+    "Politics",
+    "Climate",
+    "Science",
+    "Tech",
+    "Pop Culture",
+    "Business",
+)
+
+
+def derive_category_from_tags(tags: Any) -> str | None:
+    """Pick the first canonical category tag (case-insensitive) from a tag
+    list. Tags can be strings or `{label, ...}` dicts — Gamma uses both
+    shapes depending on endpoint. Returns None when no canonical tag matches.
+    """
+    if not tags or not isinstance(tags, list):
+        return None
+    labels: list[str] = []
+    for t in tags:
+        if isinstance(t, str):
+            labels.append(t.strip())
+        elif isinstance(t, dict):
+            lbl = t.get("label") or t.get("name")
+            if isinstance(lbl, str):
+                labels.append(lbl.strip())
+    if not labels:
+        return None
+    lc_labels = {l.lower() for l in labels}
+    for canon in _CANONICAL_CATEGORIES:
+        if canon.lower() in lc_labels:
+            return canon
+    return None
+
+
+def build_event_category_map(events: list[dict[str, Any]]) -> dict[str, str]:
+    """Build event_id → canonical_category. Skips events with no derivable
+    category so caller can still default to 'Other'."""
+    out: dict[str, str] = {}
+    for e in events:
+        cat = derive_category_from_tags(e.get("tags"))
+        if not cat:
+            continue
+        eid = e.get("id") or e.get("event_id")
+        if eid is None:
+            continue
+        out[str(eid)] = cat
+    return out
+
+
 def _to_decimal(v: Any, default: Decimal | None = None) -> Decimal | None:
     if v is None or v == "":
         return default

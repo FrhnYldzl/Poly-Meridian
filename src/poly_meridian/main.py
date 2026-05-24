@@ -30,6 +30,7 @@ from poly_meridian.ingestion import GammaClient, GdeltNewsSource
 from poly_meridian.ingestion.book import LocalBook
 from poly_meridian.ingestion.clob_ws import ClobWebsocketSource
 from poly_meridian.ingestion.normalize import (
+    build_event_category_map,
     gamma_market_to_domain,
     gamma_market_to_row,
 )
@@ -336,6 +337,27 @@ async def _gamma_sync_loop(
         try:
             async with GammaClient() as g:
                 raw = await g.iter_active_markets()
+                # Gamma's /markets returns category=None — categories live in
+                # /events as a `tags` array. Fetch events and derive a
+                # canonical category per event, then propagate it onto each
+                # market row via eventId lookup.
+                try:
+                    events_raw = await g.iter_active_events()
+                    cat_map = build_event_category_map(events_raw)
+                    for r in raw:
+                        eid = r.get("eventId") or r.get("event_id")
+                        if eid is None:
+                            continue
+                        derived = cat_map.get(str(eid))
+                        if derived:
+                            r["category"] = derived
+                    log.info(
+                        "gamma_sync.category_attached",
+                        events=len(events_raw),
+                        with_category=len(cat_map),
+                    )
+                except Exception as exc:
+                    log.warning("gamma_sync.category_derive_failed", error=str(exc))
             rows: list[dict[str, Any]] = []
             for r in raw:
                 row = gamma_market_to_row(r)

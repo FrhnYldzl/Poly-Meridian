@@ -97,6 +97,26 @@ class GammaClient:
     async def get_market(self, condition_id: str) -> dict[str, Any]:
         return await self._get(f"/markets/{condition_id}")
 
-    async def list_active_events(self, *, limit: int = 200) -> list[dict[str, Any]]:
-        data = await self._get("/events", params={"active": "true", "limit": limit})
+    async def list_active_events(
+        self, *, limit: int = 200, offset: int = 0
+    ) -> list[dict[str, Any]]:
+        data = await self._get(
+            "/events",
+            params={"active": "true", "closed": "false", "limit": limit, "offset": offset},
+        )
         return data if isinstance(data, list) else list((data or {}).get("data", []))
+
+    async def iter_active_events(self, *, page_size: int = 200) -> list[dict[str, Any]]:
+        """Paginate fully through /events until empty page. Bounded to 25 pages.
+        Used by the category-derivation pipeline — events carry the `tags` array
+        that markets reference for canonical Polymarket categories."""
+        out: list[dict[str, Any]] = []
+        for page in range(25):
+            chunk = await self.list_active_events(limit=page_size, offset=page * page_size)
+            if not chunk:
+                break
+            out.extend(chunk)
+            if len(chunk) < page_size:
+                break
+        log.info("gamma.iter_active_events", count=len(out))
+        return out
