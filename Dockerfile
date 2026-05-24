@@ -26,4 +26,12 @@ COPY scripts ./scripts
 ENV MODE=paper \
     PORT=8000
 
+# Railway routes traffic to whatever port the platform assigns via $PORT.
+# Our settings.py reads $PORT with fallback to $PROMETHEUS_PORT → 8000.
+EXPOSE 8000
+
+# Healthcheck so Railway / Docker can confirm the agent is alive.
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=5)" || exit 1
+
 CMD ["python", "-m", "poly_meridian.main"]

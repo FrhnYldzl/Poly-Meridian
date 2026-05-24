@@ -4,7 +4,7 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field, SecretStr
+from pydantic import AliasChoices, Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from poly_meridian.domain import Mode
@@ -59,8 +59,14 @@ class Settings(BaseSettings):
     telegram_bot_token: SecretStr = Field(default=SecretStr(""))
     telegram_chat_id: str = ""
 
-    # --- Observability ---
-    prometheus_port: int = 8000
+    # --- Observability / API port ---
+    # `prometheus_port` is the FastAPI port (legacy name kept for back-compat).
+    # On Railway, the platform sets $PORT — read that with precedence, then
+    # fall back to the legacy PROMETHEUS_PORT for local docker-compose.
+    prometheus_port: int = Field(
+        default=8000,
+        validation_alias=AliasChoices("PORT", "PROMETHEUS_PORT"),
+    )
 
     @property
     def is_live(self) -> bool:
