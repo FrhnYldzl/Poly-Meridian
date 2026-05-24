@@ -1,6 +1,7 @@
 "use client";
 
 import { useSharedAgentState } from "@/hooks/use-shared-agent-state";
+import { ActivityPanel } from "@/components/activity-panel";
 import { OrdersFeed } from "@/components/orders-feed";
 import { PositionsTable } from "@/components/positions-table";
 import { RiskPanel } from "@/components/risk-panel";
@@ -21,15 +22,18 @@ export default function OverviewPage() {
         />
       </div>
 
-      {/* 2×3 panel grid */}
+      {/* 2×4 panel grid: positions | signals | activity | risk on top row, orders + smart-money below */}
       <div className="grid min-h-0 flex-1 grid-cols-1 gap-2 p-2 lg:grid-cols-12 lg:grid-rows-2">
-        <div className="min-h-0 lg:col-span-6">
+        <div className="min-h-0 lg:col-span-5">
           <PositionsTable positions={snapshot?.open_positions ?? []} />
         </div>
         <div className="min-h-0 lg:col-span-3">
           <SignalsFeed signals={snapshot?.last_signals ?? []} />
         </div>
-        <div className="min-h-0 lg:col-span-3">
+        <div className="min-h-0 lg:col-span-2">
+          <ActivityPanel snapshot={snapshot} />
+        </div>
+        <div className="min-h-0 lg:col-span-2">
           <RiskPanel snapshot={snapshot} />
         </div>
 
