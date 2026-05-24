@@ -417,15 +417,18 @@ def _build_pipeline_and_news_proc() -> tuple[Pipeline, NewsProcessor | None]:
     )
     executor._on_fill = pipeline.on_fill  # type: ignore[attr-defined]
 
-    # Build sentiment processor only when both keys + a sensible model are set.
+    # Build sentiment processor based on available API keys.
+    # - OpenAI key → vector mode (best precision via embeddings + pgvector)
+    # - Anthropic key only → keyword mode (Postgres ILIKE fallback)
+    # - Neither → disabled
     s = get_settings()
-    if s.openai_api_key.get_secret_value():
+    has_openai = bool(s.openai_api_key.get_secret_value())
+    has_anthropic = bool(s.anthropic_api_key.get_secret_value())
+    if has_openai or has_anthropic:
         try:
-            embeddings = OpenAIEmbeddings()
+            embeddings = OpenAIEmbeddings() if has_openai else None
             scorer = (
-                ClaudeSentimentScorer()
-                if s.anthropic_api_key.get_secret_value()
-                else HeuristicSentimentScorer()
+                ClaudeSentimentScorer() if has_anthropic else HeuristicSentimentScorer()
             )
             news_proc = NewsProcessor(embeddings=embeddings, scorer=scorer)
         except Exception:

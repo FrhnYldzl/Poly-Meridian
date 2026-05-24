@@ -44,10 +44,20 @@ PM_NEWS_SIGNAL_EMITTED = Counter(
 
 
 class NewsProcessor:
+    """Orchestrates the article → signals pipeline.
+
+    Two operating modes:
+    - **Vector mode** (embeddings != None): OpenAI/Voyage embeddings + pgvector
+      cosine search. High precision news→market matching.
+    - **Keyword mode** (embeddings is None): tokenize + Postgres ILIKE search
+      against markets.question. Lower precision but works without an
+      embeddings provider (Anthropic-only setups).
+    """
+
     def __init__(
         self,
         *,
-        embeddings: EmbeddingsBackend,
+        embeddings: EmbeddingsBackend | None,
         scorer: SentimentScorer,
         top_k: int = 5,
         min_similarity: float = 0.4,
@@ -59,6 +69,10 @@ class NewsProcessor:
         self._min_similarity = min_similarity
         self._min_impact = min_impact_for_signal
 
+    @property
+    def mode(self) -> str:
+        return "vector" if self._embeddings is not None else "keyword"
+
     async def embed_markets_if_stale(
         self,
         db: Database,
@@ -66,8 +80,10 @@ class NewsProcessor:
     ) -> int:
         """Compute + cache embeddings for markets whose question changed.
 
-        `markets` are raw Gamma rows; we use `conditionId` + `question`.
+        No-op in keyword mode — markets are matched via ILIKE on question text.
         """
+        if self._embeddings is None:
+            return 0
         to_embed: list[tuple[str, str, str]] = []  # (condition_id, question, hash)
         for row in markets:
             cid = row.get("conditionId") or row.get("condition_id")
@@ -112,28 +128,26 @@ class NewsProcessor:
         if not articles:
             return 0
 
-        # 1. embed titles (single batched call)
-        titles = [a.get("title") or "" for a in articles]
-        try:
-            vectors = await self._embeddings.embed(titles)
-        except Exception as exc:
-            log.warning("news.embed_failed", error=str(exc), n=len(titles))
-            return 0
-
-        # 2. write embedding column on each article (cheap UPDATEs).
-        for art, vec in zip(articles, vectors, strict=True):
+        if self._embeddings is not None:
+            # ---- VECTOR MODE: embed + pgvector cosine match ----
+            titles = [a.get("title") or "" for a in articles]
             try:
-                await set_news_embedding(db, article_id=art["article_id"], embedding=vec)
+                vectors = await self._embeddings.embed(titles)
             except Exception as exc:
-                log.warning("news.emb_write_failed", error=str(exc), aid=art["article_id"])
+                log.warning("news.embed_failed", error=str(exc), n=len(titles))
+                return 0
 
-        # 3. for each article, find top-K markets + score.
+            for art, vec in zip(articles, vectors, strict=True):
+                try:
+                    await set_news_embedding(db, article_id=art["article_id"], embedding=vec)
+                except Exception as exc:
+                    log.warning("news.emb_write_failed", error=str(exc), aid=art["article_id"])
+
+        # ---- For each article, match to markets + score sentiment ----
         processed = 0
         for art in articles:
             try:
-                matches = await find_top_k_markets_for_article(
-                    db, article_id=art["article_id"], k=self._top_k, min_similarity=self._min_similarity
-                )
+                matches = await self._match_markets(db, art)
             except Exception as exc:
                 log.warning("news.match_failed", error=str(exc), aid=art["article_id"])
                 continue
@@ -178,5 +192,28 @@ class NewsProcessor:
             except Exception as exc:
                 log.warning("news.mark_failed", error=str(exc), aid=art["article_id"])
 
-        log.info("news.processed", n=processed)
+        log.info("news.processed", n=processed, mode=self.mode)
         return processed
+
+    async def _match_markets(
+        self, db: Database, article: dict[str, Any]
+    ) -> list[dict[str, Any]]:
+        """Dispatch matching by mode. Vector when embeddings present, else keyword."""
+        if self._embeddings is not None:
+            return await find_top_k_markets_for_article(
+                db,
+                article_id=article["article_id"],
+                k=self._top_k,
+                min_similarity=self._min_similarity,
+            )
+        # Keyword fallback path — extract tokens, ILIKE search.
+        from poly_meridian.sentiment.keyword_match import (
+            extract_keywords,
+            find_markets_by_keyword,
+        )
+
+        title = article.get("title") or ""
+        keywords = extract_keywords(title)
+        if not keywords:
+            return []
+        return await find_markets_by_keyword(db, keywords=keywords, k=self._top_k)
