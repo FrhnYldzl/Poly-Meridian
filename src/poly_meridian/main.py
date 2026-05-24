@@ -462,7 +462,14 @@ async def run() -> None:
 
     db_ok = cache_ok = False
     try:
-        await get_db()
+        db = await get_db()
+        # Auto-bootstrap schema so first-time deploys don't need psql.
+        # Idempotent — every statement uses IF NOT EXISTS.
+        try:
+            from poly_meridian.storage.schema import initialize_schema
+            await initialize_schema(db)
+        except Exception as exc:
+            log.warning("schema.bootstrap_failed", error=str(exc))
         db_ok = True
     except Exception as exc:
         log.warning("db.boot_skip", error=str(exc))
