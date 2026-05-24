@@ -62,16 +62,23 @@ class NewsProcessor:
         top_k: int = 5,
         min_similarity: float = 0.4,
         min_impact_for_signal: float = 0.1,
+        inmem_matcher: Any = None,
     ) -> None:
         self._embeddings = embeddings
         self._scorer = scorer
         self._top_k = top_k
         self._min_similarity = min_similarity
         self._min_impact = min_impact_for_signal
+        # InMemoryMatcher when pgvector isn't available — vector match without DB.
+        self._inmem_matcher = inmem_matcher
 
     @property
     def mode(self) -> str:
-        return "vector" if self._embeddings is not None else "keyword"
+        if self._inmem_matcher is not None:
+            return "inmem-vector"
+        if self._embeddings is not None:
+            return "pgvector"
+        return "keyword"
 
     async def embed_markets_if_stale(
         self,
@@ -198,7 +205,16 @@ class NewsProcessor:
     async def _match_markets(
         self, db: Database, article: dict[str, Any]
     ) -> list[dict[str, Any]]:
-        """Dispatch matching by mode. Vector when embeddings present, else keyword."""
+        """Dispatch matching by mode:
+          - inmem-vector: in-memory cosine sim (preferred when OpenAI + no pgvector)
+          - pgvector: DB-side cosine (best when extension available)
+          - keyword: ILIKE fallback
+        """
+        title = article.get("title") or ""
+        if self._inmem_matcher is not None:
+            return await self._inmem_matcher.match_article(
+                title, k=self._top_k, min_similarity=self._min_similarity,
+            )
         if self._embeddings is not None:
             return await find_top_k_markets_for_article(
                 db,
@@ -212,7 +228,6 @@ class NewsProcessor:
             find_markets_by_keyword,
         )
 
-        title = article.get("title") or ""
         keywords = extract_keywords(title)
         if not keywords:
             return []

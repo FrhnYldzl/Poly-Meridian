@@ -40,13 +40,30 @@ class GdeltNewsSource(IngestionSource):
         poll_sec: int = 900,
         timeout_sec: float = 30.0,
     ) -> None:
-        # Sensible defaults — categories that prediction markets care about.
+        # Default broad-spectrum queries covering all Polymarket categories.
+        # Overridden by main loop with dynamic per-category queries built from
+        # active markets — that's what makes the news *relevant*.
         self._queries = queries or [
-            "politics OR election",
-            "cryptocurrency OR bitcoin OR ethereum",
-            "federal reserve OR inflation OR rate",
-            "geopolitics OR war OR sanctions",
+            # Politics + macro
+            "politics OR election OR senate OR congress",
+            "federal reserve OR inflation OR interest rate OR CPI OR unemployment",
+            "geopolitics OR war OR sanctions OR diplomacy OR treaty",
+            # Crypto
+            "bitcoin OR ethereum OR solana OR cryptocurrency OR ETF",
+            # Sports — huge Polymarket category
+            "NBA OR NFL OR MLB OR NHL OR Premier League",
+            "FIFA OR World Cup OR Champions League",
+            "UFC OR MMA OR boxing OR tennis",
+            # Tech + Mentions
+            "OpenAI OR ChatGPT OR Anthropic OR Tesla OR SpaceX",
+            "Apple OR Google OR Microsoft OR Meta OR NVIDIA",
+            # Markets / finance
+            "stock market OR S&P 500 OR NASDAQ OR Dow Jones",
+            # Weather / culture
+            "hurricane OR earthquake OR weather",
+            "Grammys OR Oscars OR Eurovision OR awards",
         ]
+        self._dynamic_queries: list[str] = []
         self._poll_sec = poll_sec
         self._timeout = timeout_sec
         self._client: httpx.AsyncClient | None = None
@@ -89,15 +106,22 @@ class GdeltNewsSource(IngestionSource):
                 continue
             yield evt
 
+    def set_dynamic_queries(self, queries: list[str]) -> None:
+        """Replace queries with dynamic ones built from active market keywords."""
+        if queries:
+            self._dynamic_queries = queries
+
     async def _loop(self) -> None:
         while not self._stop.is_set():
+            queries = self._dynamic_queries or self._queries
             try:
-                for q in self._queries:
+                for q in queries:
                     if self._stop.is_set():
                         break
                     articles = await self._fetch_query(q)
                     for a in articles:
                         self._enqueue(a)
+                log.info("news.poll_cycle", n_queries=len(queries))
             except Exception as exc:
                 log.warning("news.poll_error", error=str(exc))
 

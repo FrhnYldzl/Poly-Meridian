@@ -218,6 +218,9 @@ async def _gamma_sync_loop(
                     if news_proc is not None:
                         try:
                             await news_proc.embed_markets_if_stale(db, raw)
+                            # Also refresh in-memory matcher (no-op if not configured).
+                            if news_proc._inmem_matcher is not None:  # type: ignore[reportPrivateUsage]
+                                await news_proc._inmem_matcher.refresh_markets(raw)  # type: ignore[reportPrivateUsage]
                         except Exception as exc:
                             log.warning("gamma_sync.embed_markets_failed", error=str(exc))
                 except Exception as exc:
@@ -234,9 +237,24 @@ async def _gamma_sync_loop(
             continue
 
 
-async def _news_ingest_loop(stop: asyncio.Event, log: Any) -> None:
+async def _news_ingest_loop(
+    stop: asyncio.Event,
+    market_cache: dict[str, Any],
+    log: Any,
+) -> None:
+    """Pulls news from GDELT and writes to news_articles. Uses dynamic
+    per-category queries built from the active market cache when available."""
     src = GdeltNewsSource()
     await src.start()
+    # Build dynamic queries from currently-active markets if we have them yet.
+    try:
+        from poly_meridian.sentiment.market_query_builder import build_queries_from_markets
+        dynamic = build_queries_from_markets(market_cache.get("markets", []))
+        if dynamic:
+            src.set_dynamic_queries(dynamic)
+            log.info("news.dynamic_queries", n=len(dynamic))
+    except Exception as exc:
+        log.debug("news.dynamic_query_build_failed", error=str(exc))
     try:
         async for evt in src.events():
             if stop.is_set():
@@ -435,7 +453,17 @@ def _build_pipeline_and_news_proc() -> tuple[Pipeline, NewsProcessor | None]:
                 scorer = GeminiSentimentScorer()
             else:
                 scorer = HeuristicSentimentScorer()
-            news_proc = NewsProcessor(embeddings=embeddings, scorer=scorer)
+
+            # When OpenAI is available but pgvector isn't (Railway stock
+            # Postgres), use in-memory cosine matcher — no DB extension needed.
+            inmem_matcher = None
+            if embeddings is not None:
+                from poly_meridian.sentiment.inmem_matcher import InMemoryMatcher
+                inmem_matcher = InMemoryMatcher(embeddings)
+
+            news_proc = NewsProcessor(
+                embeddings=embeddings, scorer=scorer, inmem_matcher=inmem_matcher,
+            )
         except Exception:
             news_proc = None
     else:
@@ -511,7 +539,7 @@ async def run() -> None:
         asyncio.create_task(
             _gamma_sync_loop(stop_event, market_cache, news_proc, log), name="gamma_sync"
         ),
-        asyncio.create_task(_news_ingest_loop(stop_event, log), name="news_ingest"),
+        asyncio.create_task(_news_ingest_loop(stop_event, market_cache, log), name="news_ingest"),
         asyncio.create_task(
             _pipeline_loop(stop_event, pipeline, market_cache, log), name="pipeline"
         ),
