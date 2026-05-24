@@ -162,6 +162,19 @@ class AgentStateBroker:
         """Same as seed_signals but for the orders feed."""
         self._snapshot.last_orders = list(orders[:50])
 
+    # ---------- markets directory (compact projection) ----------
+    # Used by /api/markets — we DON'T put this in the SSE snapshot stream
+    # because the full set is hundreds of rows × ~1KB each = too noisy.
+    # Lives on the broker instead, fetched on demand.
+
+    def update_markets_directory(self, markets: list[dict[str, Any]]) -> None:
+        """Replace the cached markets directory. Caller is expected to pass
+        the same compact projection shape that /api/markets returns."""
+        self._markets_directory = list(markets)
+
+    def get_markets_directory(self) -> list[dict[str, Any]]:
+        return getattr(self, "_markets_directory", []) or []
+
     def set_first_signal_hook(self, cb: Callable[[dict[str, Any]], None]) -> None:
         """Register a callback that fires exactly once — on the first signal
         observed this session. Safe to call before any signals exist."""

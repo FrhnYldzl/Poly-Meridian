@@ -26,6 +26,7 @@ from poly_meridian.risk import DefaultRiskPolicy, RiskDecision
 from poly_meridian.risk.trade_metrics import compute_trade_metrics
 from poly_meridian.strategies import (
     ArbitrageStrategy,
+    FundamentalsStrategy,
     SentimentStrategy,
     SignalAggregator,
     SmartMoneyStrategy,
@@ -70,11 +71,13 @@ class Pipeline:
         ledger: Ledger,
         token_to_category: dict[str, str] | None = None,
         stat_quant: StatQuantStrategy | None = None,
+        fundamentals: FundamentalsStrategy | None = None,
     ) -> None:
         self.arbitrage = arbitrage
         self.sentiment = sentiment
         self.smart_money = smart_money
         self.stat_quant = stat_quant
+        self.fundamentals = fundamentals
         self.aggregator = aggregator
         self.risk = risk
         self.router = OrderRouter(executor)
@@ -92,6 +95,8 @@ class Pipeline:
             self.smart_money.attach_book(token_id, book)
         if self.stat_quant is not None:
             self.stat_quant.attach_book(token_id, book)
+        if self.fundamentals is not None:
+            self.fundamentals.attach_book(token_id, book)
         self.executor.attach_book(token_id, book)
         # Propagate category for fee schedule.
         cat = self.token_to_category.get(token_id)
@@ -141,7 +146,10 @@ class Pipeline:
 
         # Evaluate enabled strategies in parallel-friendly sequence.
         signals = []
-        for strat in (self.arbitrage, self.sentiment, self.smart_money, self.stat_quant):
+        for strat in (
+            self.arbitrage, self.sentiment, self.smart_money,
+            self.stat_quant, self.fundamentals,
+        ):
             if strat is None or not getattr(strat, "enabled", False):
                 continue
             try:

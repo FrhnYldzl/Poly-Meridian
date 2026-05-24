@@ -387,3 +387,115 @@ async def fetch_recent_orders(
             limit,
         )
         return [dict(r) for r in rows]
+
+
+# ---------- positions + pnl_daily persistence ----------
+# Audit's #1 blocker: without these the promotion gate's "7 days paper"
+# check has no data to query and live trading is forever-blocked.
+
+
+async def upsert_position(
+    db: Database,
+    *,
+    token_id: str,
+    qty: Decimal,
+    avg_cost: Decimal,
+    last_mark: Decimal,
+    last_updated: datetime,
+) -> None:
+    """Mirror a single position to the `positions` table. Called on every
+    apply_fill + mark cycle in the ledger. Deletes the row when qty == 0
+    so the table only carries open positions."""
+    async with db.acquire() as conn:
+        if qty == 0:
+            await conn.execute(
+                "DELETE FROM positions WHERE token_id = $1", token_id
+            )
+            return
+        await conn.execute(
+            """
+            INSERT INTO positions (token_id, qty, avg_cost, last_mark, last_updated)
+            VALUES ($1,$2,$3,$4,$5)
+            ON CONFLICT (token_id) DO UPDATE SET
+                qty          = EXCLUDED.qty,
+                avg_cost     = EXCLUDED.avg_cost,
+                last_mark    = EXCLUDED.last_mark,
+                last_updated = EXCLUDED.last_updated
+            """,
+            token_id, qty, avg_cost, last_mark, last_updated,
+        )
+
+
+async def fetch_positions(db: Database) -> list[dict[str, Any]]:
+    """Restore positions on agent boot — used by ledger replay."""
+    async with db.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT token_id,
+                   qty::float8 AS qty,
+                   avg_cost::float8 AS avg_cost,
+                   last_mark::float8 AS last_mark,
+                   last_updated
+            FROM positions
+            """
+        )
+        return [dict(r) for r in rows]
+
+
+async def upsert_pnl_daily(
+    db: Database,
+    *,
+    date: datetime,
+    starting_nav: Decimal,
+    ending_nav: Decimal,
+    realized: Decimal,
+    unrealized: Decimal,
+    fees: Decimal,
+    trade_count: int,
+    win_count: int,
+) -> None:
+    """One row per calendar day. Idempotent — re-running with a same-day
+    snapshot just refreshes the values. Drives the promotion gate's
+    paper-track metrics."""
+    async with db.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO pnl_daily (
+                date, starting_nav, ending_nav, realized, unrealized,
+                fees, trade_count, win_count
+            ) VALUES ($1::date,$2,$3,$4,$5,$6,$7,$8)
+            ON CONFLICT (date) DO UPDATE SET
+                ending_nav  = EXCLUDED.ending_nav,
+                realized    = EXCLUDED.realized,
+                unrealized  = EXCLUDED.unrealized,
+                fees        = EXCLUDED.fees,
+                trade_count = EXCLUDED.trade_count,
+                win_count   = EXCLUDED.win_count
+            """,
+            date.date() if hasattr(date, "date") else date,
+            starting_nav, ending_nav, realized, unrealized, fees,
+            trade_count, win_count,
+        )
+
+
+async def fetch_pnl_daily(
+    db: Database, *, days: int = 30
+) -> list[dict[str, Any]]:
+    """Recent daily P&L rows for the promotion gate + portfolio chart."""
+    async with db.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT date,
+                   starting_nav::float8 AS starting_nav,
+                   ending_nav::float8 AS ending_nav,
+                   realized::float8 AS realized,
+                   unrealized::float8 AS unrealized,
+                   fees::float8 AS fees,
+                   trade_count, win_count
+            FROM pnl_daily
+            WHERE date >= NOW() - ($1 || ' days')::INTERVAL
+            ORDER BY date DESC
+            """,
+            str(days),
+        )
+        return [dict(r) for r in rows]

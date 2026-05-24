@@ -17,11 +17,17 @@ export function SmartMoneyPanel({ clusters }: SmartMoneyPanelProps) {
       bodyClassName="font-mono text-[11px]"
     >
       {clusters.length === 0 ? (
-        <div className="flex h-full flex-col items-center justify-center gap-1 text-terminal-dim">
-          <span>no active clusters</span>
-          <span className="text-[10px] text-terminal-dim/70">
-            waiting for ≥3 Tier 1 wallets same direction
+        <div className="flex h-full flex-col items-center justify-center gap-2 px-4 py-3 text-center text-terminal-dim">
+          <span className="text-[28px] leading-none text-terminal-dim/40">🦈</span>
+          <span className="text-[11px]">no active whale clusters</span>
+          <span className="text-[10px] leading-snug text-terminal-dim/70">
+            fires when ≥3 Tier-1 wallets buy the same outcome within 30 min
           </span>
+          <div className="mt-2 grid grid-cols-3 gap-1 text-[9px] uppercase tracking-wider">
+            <span className="rounded border border-terminal-green/30 px-1 py-0.5 text-terminal-green/70">T1 · proven</span>
+            <span className="rounded border border-terminal-yellow/30 px-1 py-0.5 text-terminal-yellow/70">T2 · hot</span>
+            <span className="rounded border border-terminal-cyan/30 px-1 py-0.5 text-terminal-cyan/70">T3 · watch</span>
+          </div>
         </div>
       ) : (
         <ul className="divide-y divide-terminal-border/60">

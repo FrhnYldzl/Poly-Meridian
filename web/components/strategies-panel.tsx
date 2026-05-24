@@ -27,9 +27,13 @@ const STRATEGY_LABELS: Record<string, string> = {
 
 export function StrategiesPanel({ enabled, signals }: StrategiesPanelProps) {
   // Bucket signals per strategy in the last window (max 50 entries).
+  // StatQuant emits as "stat_quant.mean_reversion" / ".momentum" / etc —
+  // match by the leading base name so all variants roll up to one bucket.
   const counts = new Map<string, number>();
   for (const s of signals) {
-    counts.set(s.strategy, (counts.get(s.strategy) ?? 0) + 1);
+    const base = (s.strategy ?? "").split(".")[0];
+    if (!base) continue;
+    counts.set(base, (counts.get(base) ?? 0) + 1);
   }
   const total = signals.length;
 

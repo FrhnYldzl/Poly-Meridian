@@ -55,6 +55,86 @@ def build_app(broker: AgentStateBroker) -> FastAPI:
     async def state() -> dict[str, Any]:
         return broker.snapshot.asdict()
 
+    @app.get("/api/markets")
+    async def markets_directory(
+        category: str | None = None,
+        sort: str = "liquidity",
+        limit: int = 500,
+    ) -> dict[str, Any]:
+        """Compact markets directory built from the most recent gamma_sync.
+
+        Query params:
+          - category: filter to one canonical Polymarket category
+          - sort: liquidity | volume | end_date (default liquidity desc)
+          - limit: max rows to return (default 500, no hard cap)
+
+        Returns {markets: [...], total: N, by_category: {...}}.
+        """
+        rows = broker.get_markets_directory()
+        if category and category != "all":
+            rows = [r for r in rows if (r.get("category") or "Other") == category]
+        if sort == "volume":
+            rows = sorted(rows, key=lambda r: float(r.get("volume") or 0), reverse=True)
+        elif sort == "end_date":
+            rows = sorted(rows, key=lambda r: str(r.get("end_date") or "9999"))
+        else:
+            rows = sorted(rows, key=lambda r: float(r.get("liquidity") or 0), reverse=True)
+        # by_category buckets are computed across the UNFILTERED set so the
+        # UI's filter chips show the full universe count.
+        by_cat: dict[str, int] = {}
+        for r in broker.get_markets_directory():
+            c = r.get("category") or "Other"
+            by_cat[c] = by_cat.get(c, 0) + 1
+        return {
+            "markets": rows[:limit],
+            "total": len(rows),
+            "universe_total": len(broker.get_markets_directory()),
+            "by_category": by_cat,
+        }
+
+    @app.post("/api/backtest/run")
+    async def run_backtest(
+        seed: int = 42,
+        n_markets: int = 12,
+        n_steps: int = 200,
+        starting_nav: float = 100_000.0,
+        bet_size_pct: float = 0.02,
+        zscore_threshold: float = 1.5,
+    ) -> dict[str, Any]:
+        """Run a synthetic backtest with the requested params.
+
+        Currently uses src/poly_meridian/backtest/synthetic.py — deterministic
+        random-walk on simulated markets with a mean-reversion strategy. The
+        real `Replayer` engine + `load_dataset_from_db` are wired in code but
+        require enough orderbook_snapshots history to be meaningful; once we
+        have a few days of history we can switch this to call them.
+        """
+        from poly_meridian.backtest.synthetic import (
+            SyntheticBacktestConfig, run_synthetic_backtest,
+        )
+        cfg = SyntheticBacktestConfig(
+            seed=int(seed),
+            n_markets=max(1, min(50, int(n_markets))),
+            n_steps=max(20, min(2000, int(n_steps))),
+            starting_nav=float(starting_nav),
+            bet_size_pct=max(0.001, min(0.1, float(bet_size_pct))),
+            zscore_threshold=max(0.5, min(4.0, float(zscore_threshold))),
+        )
+        result = await asyncio.to_thread(run_synthetic_backtest, cfg)
+        return {
+            "mode": "synthetic",
+            "config": {
+                "seed": cfg.seed,
+                "n_markets": cfg.n_markets,
+                "n_steps": cfg.n_steps,
+                "step_sec": cfg.step_sec,
+                "starting_nav": cfg.starting_nav,
+                "bet_size_pct": cfg.bet_size_pct,
+                "zscore_threshold": cfg.zscore_threshold,
+            },
+            **result.asdict(),
+        }
+
     @app.get("/api/settings")
     async def settings_info() -> dict[str, Any]:
         s = get_settings()

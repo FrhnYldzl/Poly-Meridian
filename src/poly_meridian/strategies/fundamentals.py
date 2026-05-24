@@ -20,6 +20,7 @@ from poly_meridian.fundamentals import (
     PoliticsResolver,
     SportsResolver,
 )
+from poly_meridian.fundamentals.default import DefaultResolver
 from poly_meridian.ingestion.book import LocalBook
 from poly_meridian.strategies.base import BaseStrategy
 
@@ -67,6 +68,11 @@ class FundamentalsStrategy(BaseStrategy):
                 "Crypto": CryptoResolver(),
                 "Macro": MacroResolver(),
             }
+        # Fallback: when the category-specific resolver returns None (no
+        # external data yet — polls/Elo/funding etc.) the DefaultResolver
+        # produces a weak-but-real signal from book + time + liquidity so
+        # Fundamentals actually contributes instead of silently skipping.
+        self._default_resolver = DefaultResolver()
 
         self._books: dict[str, LocalBook] = {}
         self._context = FundamentalsContext()
@@ -89,24 +95,37 @@ class FundamentalsStrategy(BaseStrategy):
         if not self.enabled:
             return None
         category = market.category or "Uncategorized"
-        if category not in self._enabled_categories and category not in self._resolvers:
-            return None
         resolver = self._resolvers.get(category)
-        if resolver is None:
-            return None
 
         # Refresh the context's `now` so resolvers see consistent time.
         self._context.now = datetime.now(UTC)
-        try:
-            est = resolver.resolve(market, self._context)
-        except Exception as exc:
-            log.warning(
-                "fundamentals.resolver_error",
-                category=category,
-                condition_id=market.condition_id,
-                error=str(exc),
-            )
-            return None
+
+        est = None
+        if resolver is not None and (
+            category in self._enabled_categories or category == "Uncategorized"
+        ):
+            try:
+                est = resolver.resolve(market, self._context)
+            except Exception as exc:
+                log.warning(
+                    "fundamentals.resolver_error",
+                    category=category,
+                    condition_id=market.condition_id,
+                    error=str(exc),
+                )
+
+        # Fallback to the default resolver when category-specific returned
+        # None — most common case today since external data feeds (polls,
+        # Elo, funding rates) aren't wired yet.
+        if est is None:
+            try:
+                est = self._default_resolver.resolve(market, self._context)
+            except Exception as exc:
+                log.warning(
+                    "fundamentals.default_resolver_error",
+                    condition_id=market.condition_id,
+                    error=str(exc),
+                )
         if est is None:
             return None
         if est.confidence < self.min_confidence:

@@ -52,6 +52,8 @@ from poly_meridian.sentiment.news_processor import NewsProcessor
 from poly_meridian.settings import get_settings
 from poly_meridian.storage import close_cache, close_db, get_cache, get_db
 from poly_meridian.storage.writers import (
+    fetch_pnl_daily,
+    fetch_positions,
     fetch_recent_news_signals,
     fetch_recent_orders,
     fetch_recent_strategy_signals,
@@ -59,10 +61,13 @@ from poly_meridian.storage.writers import (
     insert_strategy_signal,
     upsert_markets,
     upsert_order,
+    upsert_pnl_daily,
+    upsert_position,
 )
 from poly_meridian.strategies import (
     ArbitrageStrategy,
     ClusterStateBuilder,
+    FundamentalsStrategy,
     SentimentStrategy,
     SignalAggregator,
     SmartMoneyStrategy,
@@ -440,6 +445,23 @@ async def _gamma_sync_loop(
                         markets_active_total=len(raw),
                         ws_subscribed_total=min(WS_SAMPLE_SIZE, len(raw)),
                     )
+                    # Push a compact projection of every market into the
+                    # broker so /api/markets can serve the full directory
+                    # without re-hitting Gamma each request. Strip Gamma's
+                    # huge raw blobs — the UI only needs the headline fields.
+                    directory: list[dict[str, Any]] = []
+                    for r in raw:
+                        directory.append({
+                            "condition_id": r.get("conditionId") or r.get("condition_id"),
+                            "question": r.get("question"),
+                            "category": r.get("category") or "Other",
+                            "liquidity": float(r.get("liquidityNum") or r.get("liquidity") or 0),
+                            "volume": float(r.get("volumeNum") or r.get("volume") or 0),
+                            "end_date": r.get("endDateIso") or r.get("endDate"),
+                            "active": bool(r.get("active", True)),
+                            "closed": bool(r.get("closed", False)),
+                        })
+                    broker.update_markets_directory(directory)
                 # Register token→condition mappings into the cluster builder
                 # so when on-chain CTF transfers arrive, we can route them
                 # to the right condition. Safe to call every sync — idempotent.
@@ -512,6 +534,83 @@ async def _news_ingest_loop(
                 log.warning("news.write_error", error=str(exc))
     finally:
         await src.stop()
+
+
+async def _portfolio_persist_loop(
+    stop: asyncio.Event,
+    pipeline: Pipeline,
+    log: Any,
+) -> None:
+    """Phase H.5 — mirror positions to DB every 30s + write pnl_daily once
+    per day. Unblocks the promotion gate (paper-track needs ≥7 daily rows)
+    and means a Railway restart no longer wipes the position book.
+
+    Each cycle is fire-and-forget — DB outage warnings logged but never
+    bubble up to crash the trading loop.
+    """
+    INTERVAL_SEC = 30
+    last_pnl_date: Any = None
+    while not stop.is_set():
+        try:
+            db = await get_db()
+            # Mirror current positions. Closed positions (qty=0) get deleted.
+            for p in pipeline.ledger.positions():
+                try:
+                    await upsert_position(
+                        db,
+                        token_id=p.token_id,
+                        qty=p.qty,
+                        avg_cost=p.avg_cost,
+                        last_mark=p.last_mark,
+                        last_updated=p.last_updated,
+                    )
+                except Exception as exc:
+                    log.debug("persist.position_failed", error=str(exc)[:120])
+
+            # Daily P&L summary — write once per UTC day. Idempotent ON CONFLICT
+            # so the within-day refreshes update the same row.
+            now = datetime.now(UTC)
+            today = now.date()
+            snap = snapshot(pipeline.ledger)
+            ledger_entries = pipeline.ledger.entries()
+            today_entries = [
+                e for e in ledger_entries
+                if hasattr(e.ts, "date") and e.ts.date() == today
+            ]
+            realized = sum(
+                (e.notional for e in today_entries if e.qty < 0), Decimal(0)
+            )
+            fees = sum((e.fee for e in today_entries), Decimal(0))
+            trade_count = len(today_entries)
+            win_count = sum(
+                1 for e in today_entries
+                if e.qty < 0 and (e.notional - e.fee) > 0
+            )
+            try:
+                await upsert_pnl_daily(
+                    db,
+                    date=now,
+                    starting_nav=pipeline.ledger.starting_cash,
+                    ending_nav=Decimal(str(snap.nav_usd)),
+                    realized=realized,
+                    unrealized=Decimal(str(snap.nav_usd)) - pipeline.ledger.starting_cash - realized,
+                    fees=fees,
+                    trade_count=trade_count,
+                    win_count=win_count,
+                )
+                if last_pnl_date != today:
+                    log.info("persist.pnl_daily_started", date=str(today))
+                    last_pnl_date = today
+            except Exception as exc:
+                log.debug("persist.pnl_daily_failed", error=str(exc)[:120])
+        except Exception as exc:
+            log.warning("portfolio_persist.cycle_error", error=str(exc)[:120])
+
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=INTERVAL_SEC)
+            return
+        except asyncio.TimeoutError:
+            continue
 
 
 async def _news_process_loop(stop: asyncio.Event, proc: NewsProcessor, log: Any) -> None:
@@ -604,7 +703,7 @@ async def _pipeline_loop(
             n_strategies = sum(
                 1 for s in (
                     pipeline.arbitrage, pipeline.sentiment, pipeline.smart_money,
-                    pipeline.stat_quant,
+                    pipeline.stat_quant, pipeline.fundamentals,
                 ) if s and getattr(s, "enabled", False)
             )
             broker = getattr(pipeline, "broker", None)
@@ -657,6 +756,7 @@ def _build_pipeline_and_news_proc() -> tuple[Pipeline, NewsProcessor | None]:
     sent_cfg = _load_yaml("strategies/sentiment.yaml")
     sm_cfg = _load_yaml("strategies/smart_money.yaml")
     sq_cfg = _load_yaml("strategies/stat_quant.yaml")
+    fund_cfg = _load_yaml("strategies/fundamentals.yaml")
     limits = _load_risk_limits()
     settings = get_settings()
 
@@ -664,6 +764,7 @@ def _build_pipeline_and_news_proc() -> tuple[Pipeline, NewsProcessor | None]:
     sentiment = SentimentStrategy(sent_cfg)
     smart_money = SmartMoneyStrategy(sm_cfg)
     stat_quant = StatQuantStrategy(sq_cfg)
+    fundamentals = FundamentalsStrategy(fund_cfg)
 
     aggregator = SignalAggregator(max_size_pct_per_position=limits.max_position_pct_of_bankroll)
     starting_nav = Decimal("100000") if str(settings.mode) == "paper" else Decimal("500")
@@ -676,6 +777,7 @@ def _build_pipeline_and_news_proc() -> tuple[Pipeline, NewsProcessor | None]:
         sentiment=sentiment,
         smart_money=smart_money,
         stat_quant=stat_quant,
+        fundamentals=fundamentals,
         aggregator=aggregator,
         risk=risk,
         executor=executor,
@@ -782,7 +884,7 @@ async def run() -> None:
     broker.update_strategies([
         s.name for s in (
             pipeline.arbitrage, pipeline.sentiment, pipeline.smart_money,
-            pipeline.stat_quant,
+            pipeline.stat_quant, pipeline.fundamentals,
         ) if s is not None and getattr(s, "enabled", False)
     ])
     broker.update_infra(
@@ -993,6 +1095,14 @@ async def run() -> None:
         tasks.append(
             asyncio.create_task(
                 _news_process_loop(stop_event, news_proc, log), name="news_process"
+            )
+        )
+    if db_ok:
+        # Phase H.5 — mirror positions + pnl_daily so promotion gate has data.
+        tasks.append(
+            asyncio.create_task(
+                _portfolio_persist_loop(stop_event, pipeline, log),
+                name="portfolio_persist",
             )
         )
 
