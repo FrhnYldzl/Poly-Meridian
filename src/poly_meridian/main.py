@@ -31,6 +31,7 @@ from poly_meridian.ingestion.book import LocalBook
 from poly_meridian.ingestion.clob_ws import ClobWebsocketSource
 from poly_meridian.ingestion.normalize import (
     build_event_category_map,
+    extract_event_id,
     gamma_market_to_domain,
     gamma_market_to_row,
 )
@@ -344,17 +345,21 @@ async def _gamma_sync_loop(
                 try:
                     events_raw = await g.iter_active_events()
                     cat_map = build_event_category_map(events_raw)
+                    attached = 0
                     for r in raw:
-                        eid = r.get("eventId") or r.get("event_id")
+                        eid = extract_event_id(r)
                         if eid is None:
                             continue
-                        derived = cat_map.get(str(eid))
+                        derived = cat_map.get(eid)
                         if derived:
                             r["category"] = derived
+                            attached += 1
                     log.info(
                         "gamma_sync.category_attached",
                         events=len(events_raw),
                         with_category=len(cat_map),
+                        markets_with_category=attached,
+                        markets_total=len(raw),
                     )
                 except Exception as exc:
                     log.warning("gamma_sync.category_derive_failed", error=str(exc))

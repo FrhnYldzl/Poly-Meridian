@@ -73,6 +73,26 @@ def build_event_category_map(events: list[dict[str, Any]]) -> dict[str, str]:
     return out
 
 
+def extract_event_id(market: dict[str, Any]) -> str | None:
+    """Pull the event id off a Gamma market row.
+
+    Gamma's response shape is annoying here: the top-level `eventId` field
+    is consistently `None`, and the actual event id sits inside an embedded
+    `events` list as `events[0].id`. Try every shape we've seen in the wild.
+    """
+    direct = market.get("eventId") or market.get("event_id")
+    if direct:
+        return str(direct)
+    events = market.get("events")
+    if isinstance(events, list) and events:
+        first = events[0]
+        if isinstance(first, dict):
+            eid = first.get("id") or first.get("event_id")
+            if eid:
+                return str(eid)
+    return None
+
+
 def _to_decimal(v: Any, default: Decimal | None = None) -> Decimal | None:
     if v is None or v == "":
         return default
@@ -117,7 +137,9 @@ def gamma_market_to_domain(raw: dict[str, Any]) -> Market | None:
         question=str(question),
         category=raw.get("category"),
         sub_category=raw.get("subCategory") or raw.get("sub_category"),
-        event_id=str(raw["eventId"]) if raw.get("eventId") else None,
+        # Gamma puts the event id in different places; extract_event_id covers
+        # the eventId / event_id / events[0].id shapes we've seen in the wild.
+        event_id=extract_event_id(raw),
         yes_token_id=str(yes_tid),
         no_token_id=str(no_tid),
         end_date_iso=_to_datetime(raw.get("endDateIso") or raw.get("end_date_iso")),
