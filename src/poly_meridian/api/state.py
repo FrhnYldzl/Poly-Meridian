@@ -46,6 +46,11 @@ class Snapshot:
     strategies_evaluated_total: int = 0
     arb_opportunities_total: int = 0   # raw_edge > 0, even if below threshold
     last_book_update_ts: str | None = None
+    # Infra connectivity (visible without Railway log access).
+    db_ok: bool = False
+    cache_ok: bool = False
+    sentiment_enabled: bool = False
+    onchain_enabled: bool = False
 
     def asdict(self) -> dict[str, Any]:
         return {
@@ -69,6 +74,10 @@ class Snapshot:
             "strategies_evaluated_total": self.strategies_evaluated_total,
             "arb_opportunities_total": self.arb_opportunities_total,
             "last_book_update_ts": self.last_book_update_ts,
+            "db_ok": self.db_ok,
+            "cache_ok": self.cache_ok,
+            "sentiment_enabled": self.sentiment_enabled,
+            "onchain_enabled": self.onchain_enabled,
         }
 
 
@@ -121,6 +130,23 @@ class AgentStateBroker:
 
     def update_markets_watched(self, count: int) -> None:
         self._snapshot.markets_watched = count
+
+    def update_infra(
+        self,
+        *,
+        db_ok: bool | None = None,
+        cache_ok: bool | None = None,
+        sentiment_enabled: bool | None = None,
+        onchain_enabled: bool | None = None,
+    ) -> None:
+        if db_ok is not None:
+            self._snapshot.db_ok = db_ok
+        if cache_ok is not None:
+            self._snapshot.cache_ok = cache_ok
+        if sentiment_enabled is not None:
+            self._snapshot.sentiment_enabled = sentiment_enabled
+        if onchain_enabled is not None:
+            self._snapshot.onchain_enabled = onchain_enabled
 
     def increment_pipeline_tick(self, *, strategies_evaluated: int, arb_seen: int = 0) -> None:
         self._snapshot.pipeline_ticks_total += 1

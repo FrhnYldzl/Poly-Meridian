@@ -490,6 +490,11 @@ async def run() -> None:
             pipeline.arbitrage, pipeline.sentiment, pipeline.smart_money,
         ) if s is not None and getattr(s, "enabled", False)
     ])
+    broker.update_infra(
+        db_ok=db_ok,
+        cache_ok=cache_ok,
+        sentiment_enabled=news_proc is not None,
+    )
     # Expose broker on pipeline so its hooks can push events.
     pipeline.broker = broker  # type: ignore[attr-defined]
 

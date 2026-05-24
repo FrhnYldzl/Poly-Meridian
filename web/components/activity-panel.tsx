@@ -43,8 +43,27 @@ export function ActivityPanel({ snapshot }: ActivityPanelProps) {
               : "—"}
           </span>
         </div>
+
+        <div className="grid grid-cols-2 gap-1.5 border-t border-terminal-border pt-3">
+          <InfraDot label="DB" ok={snapshot?.db_ok} />
+          <InfraDot label="Cache" ok={snapshot?.cache_ok} />
+          <InfraDot label="Sentiment" ok={snapshot?.sentiment_enabled} />
+          <InfraDot label="On-chain" ok={snapshot?.onchain_enabled} />
+        </div>
       </div>
     </Panel>
+  );
+}
+
+function InfraDot({ label, ok }: { label: string; ok: boolean | undefined }) {
+  const tone =
+    ok === true ? "text-terminal-green" : ok === false ? "text-terminal-dim" : "text-terminal-dim";
+  const dot = ok === true ? "bg-terminal-green" : "bg-terminal-dim";
+  return (
+    <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider">
+      <span className={"h-1.5 w-1.5 rounded-full " + dot} />
+      <span className={tone}>{label}</span>
+    </div>
   );
 }
 

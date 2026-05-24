@@ -62,6 +62,10 @@ export interface AgentSnapshot {
   strategies_evaluated_total?: number;
   arb_opportunities_total?: number;
   last_book_update_ts?: string | null;
+  db_ok?: boolean;
+  cache_ok?: boolean;
+  sentiment_enabled?: boolean;
+  onchain_enabled?: boolean;
 }
 
 export type StreamEvent =
