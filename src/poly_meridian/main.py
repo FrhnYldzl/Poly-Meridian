@@ -55,6 +55,7 @@ from poly_meridian.strategies import (
     SentimentStrategy,
     SignalAggregator,
     SmartMoneyStrategy,
+    StatQuantStrategy,
 )
 
 GAMMA_SYNC_INTERVAL_SEC = 300
@@ -401,7 +402,12 @@ async def _pipeline_loop(
                 log.debug("pipeline.sentiment_hydrate_skip", error=str(exc))
 
             # Tick each market once per cycle.
-            n_strategies = sum(1 for s in (pipeline.arbitrage, pipeline.sentiment, pipeline.smart_money) if s and getattr(s, "enabled", False))
+            n_strategies = sum(
+                1 for s in (
+                    pipeline.arbitrage, pipeline.sentiment, pipeline.smart_money,
+                    pipeline.stat_quant,
+                ) if s and getattr(s, "enabled", False)
+            )
             broker = getattr(pipeline, "broker", None)
             if broker is not None:
                 broker.update_markets_watched(len(sampled))
@@ -451,12 +457,14 @@ def _build_pipeline_and_news_proc() -> tuple[Pipeline, NewsProcessor | None]:
     arb_cfg = _load_yaml("strategies/arbitrage.yaml")
     sent_cfg = _load_yaml("strategies/sentiment.yaml")
     sm_cfg = _load_yaml("strategies/smart_money.yaml")
+    sq_cfg = _load_yaml("strategies/stat_quant.yaml")
     limits = _load_risk_limits()
     settings = get_settings()
 
     arbitrage = ArbitrageStrategy(arb_cfg)
     sentiment = SentimentStrategy(sent_cfg)
     smart_money = SmartMoneyStrategy(sm_cfg)
+    stat_quant = StatQuantStrategy(sq_cfg)
 
     aggregator = SignalAggregator(max_size_pct_per_position=limits.max_position_pct_of_bankroll)
     starting_nav = Decimal("100000") if str(settings.mode) == "paper" else Decimal("500")
@@ -468,6 +476,7 @@ def _build_pipeline_and_news_proc() -> tuple[Pipeline, NewsProcessor | None]:
         arbitrage=arbitrage,
         sentiment=sentiment,
         smart_money=smart_money,
+        stat_quant=stat_quant,
         aggregator=aggregator,
         risk=risk,
         executor=executor,
@@ -563,6 +572,7 @@ async def run() -> None:
     broker.update_strategies([
         s.name for s in (
             pipeline.arbitrage, pipeline.sentiment, pipeline.smart_money,
+            pipeline.stat_quant,
         ) if s is not None and getattr(s, "enabled", False)
     ])
     broker.update_infra(

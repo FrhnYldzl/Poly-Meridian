@@ -28,6 +28,7 @@ from poly_meridian.strategies import (
     SentimentStrategy,
     SignalAggregator,
     SmartMoneyStrategy,
+    StatQuantStrategy,
 )
 
 log = structlog.get_logger("poly_meridian.pipeline")
@@ -67,10 +68,12 @@ class Pipeline:
         executor: PaperExecutor,
         ledger: Ledger,
         token_to_category: dict[str, str] | None = None,
+        stat_quant: StatQuantStrategy | None = None,
     ) -> None:
         self.arbitrage = arbitrage
         self.sentiment = sentiment
         self.smart_money = smart_money
+        self.stat_quant = stat_quant
         self.aggregator = aggregator
         self.risk = risk
         self.router = OrderRouter(executor)
@@ -86,6 +89,8 @@ class Pipeline:
             self.sentiment.attach_book(token_id, book)
         if self.smart_money is not None:
             self.smart_money.attach_book(token_id, book)
+        if self.stat_quant is not None:
+            self.stat_quant.attach_book(token_id, book)
         self.executor.attach_book(token_id, book)
         # Propagate category for fee schedule.
         cat = self.token_to_category.get(token_id)
@@ -122,9 +127,20 @@ class Pipeline:
             end_date=market.end_date_iso,
         )
 
+        # Push fresh mid prices into StatQuant's rolling windows. Done BEFORE
+        # evaluate() so the strategy sees the current tick in its history.
+        if self.stat_quant is not None and self.stat_quant.enabled:
+            for tid in (market.yes_token_id, market.no_token_id):
+                b = self._books.get(tid)
+                if b is None:
+                    continue
+                mid = b.mid()
+                if mid is not None:
+                    self.stat_quant.push_price(tid, float(mid))
+
         # Evaluate enabled strategies in parallel-friendly sequence.
         signals = []
-        for strat in (self.arbitrage, self.sentiment, self.smart_money):
+        for strat in (self.arbitrage, self.sentiment, self.smart_money, self.stat_quant):
             if strat is None or not getattr(strat, "enabled", False):
                 continue
             try:
