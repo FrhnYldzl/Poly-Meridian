@@ -28,6 +28,7 @@ from prometheus_client import Counter, Gauge, start_http_server
 from poly_meridian.alerts import post_slack_alert, slack_alert_async
 from poly_meridian.api import AgentStateBroker, build_app
 from poly_meridian.execution import PaperExecutor
+from poly_meridian.execution.slippage_monitor import SlippageMonitor
 from poly_meridian.ingestion import GammaClient, GdeltNewsSource
 from poly_meridian.ingestion.book import LocalBook
 from poly_meridian.ingestion.clob_ws import ClobWebsocketSource
@@ -427,6 +428,14 @@ async def _broker_refresh_loop(
                 matcher_mode=news_proc.mode if news_proc is not None else None,
                 scorer_kind=scorer_kind,
             )
+            # Slippage drift summary — populated as fills accumulate.
+            sm = getattr(pipeline, "slippage_monitor", None)
+            if sm is not None:
+                try:
+                    broker.snapshot.slippage_summary = sm.summary()
+                except Exception:
+                    pass
+
             # Trade-flow funnel: strategy signals → aggregator → risk → orders.
             # Surfaces the drop-off so we can see WHY an order didn't fire
             # (aggregator conflict vs risk reject vs no signal at all).
@@ -950,6 +959,13 @@ def _build_pipeline_and_news_proc() -> tuple[Pipeline, NewsProcessor | None]:
     starting_nav = Decimal("100000") if str(settings.mode) == "paper" else Decimal("500")
     ledger = Ledger(starting_cash_usd=starting_nav)
     executor = _build_executor(str(settings.mode))
+    # Slippage drift monitor — every fill feeds an observation; main.py runs
+    # a sampler loop that re-fits and alerts on drift. PaperExecutor and
+    # LiveExecutor both honor attach_slippage_monitor() since the contract
+    # is observation-only (no behavior change in execution itself).
+    slippage_monitor = SlippageMonitor()
+    if hasattr(executor, "attach_slippage_monitor"):
+        executor.attach_slippage_monitor(slippage_monitor)
     risk = DefaultRiskPolicy(strategy_name="poly_meridian", limits=limits)
 
     pipeline = Pipeline(
@@ -964,6 +980,10 @@ def _build_pipeline_and_news_proc() -> tuple[Pipeline, NewsProcessor | None]:
         ledger=ledger,
     )
     executor._on_fill = pipeline.on_fill  # type: ignore[attr-defined]
+
+    # Expose the slippage monitor on the pipeline so the periodic
+    # alert loop can read fit + drift without smuggling state.
+    pipeline.slippage_monitor = slippage_monitor  # type: ignore[attr-defined]
 
     # Smart-money cluster builder — aggregates on-chain CTF transfers into
     # per-condition cluster states that SmartMoneyStrategy consumes. The

@@ -81,6 +81,8 @@ class Snapshot:
     # is real". The gap between the two is unrealized noise.
     liquidation_nav_usd: float = 0.0
     thesis_nav_usd: float = 0.0
+    # Slippage drift monitor (Phase K). None when < 10 fills observed yet.
+    slippage_summary: dict[str, Any] = field(default_factory=dict)
 
     def asdict(self) -> dict[str, Any]:
         return {
@@ -123,6 +125,7 @@ class Snapshot:
             "orders_submitted_total": self.orders_submitted_total,
             "liquidation_nav_usd": self.liquidation_nav_usd,
             "thesis_nav_usd": self.thesis_nav_usd,
+            "slippage_summary": self.slippage_summary,
         }
 
 

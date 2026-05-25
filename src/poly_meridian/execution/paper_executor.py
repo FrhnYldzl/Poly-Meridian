@@ -65,6 +65,7 @@ class PaperExecutor(Executor):
         fee_schedule: FeeSchedule | None = None,
         us_mode: bool = False,
         on_fill: object = None,  # Callable[[Order], Awaitable[None]] — wired by main loop
+        slippage_monitor: object = None,  # SlippageMonitor — optional
     ) -> None:
         self._books: dict[str, LocalBook] = {}
         self._orders: dict[str, Order] = {}
@@ -75,6 +76,10 @@ class PaperExecutor(Executor):
         self._fees = fee_schedule or DEFAULT_FEES
         self._us_mode = us_mode
         self._token_category: dict[str, str] = {}
+        self._slippage_monitor = slippage_monitor
+
+    def attach_slippage_monitor(self, monitor: object) -> None:
+        self._slippage_monitor = monitor
 
     def attach_book(self, token_id: str, book: LocalBook) -> None:
         self._books[token_id] = book
@@ -274,6 +279,30 @@ class PaperExecutor(Executor):
             is_maker=is_maker,
             status=str(order.status),
         )
+
+        # Slippage drift monitor: realized VWAP vs the order's expected price
+        # (the limit price the strategy proposed). Depth measured post-fill —
+        # slightly stale but acceptable, and the only depth we can read here.
+        if self._slippage_monitor is not None and order.price is not None:
+            try:
+                book = self._books.get(order.token_id)
+                depth_after = 0.0
+                if book is not None:
+                    try:
+                        side_str = "ask" if str(order.side).endswith("BUY") else "bid"
+                        depth_after = float(book.depth_within(side_str, Decimal("0.05")))
+                    except Exception:
+                        depth_after = 0.0
+                self._slippage_monitor.record_fill(
+                    token_id=order.token_id,
+                    size=float(filled),
+                    depth=depth_after,
+                    expected_price=float(order.price),
+                    realized_vwap=float(vwap),
+                )
+            except Exception as exc:
+                log.debug("paper.slippage_record_failed", error=str(exc)[:120])
+
         if self._on_fill is not None and order.status in (OrderStatus.FILLED, OrderStatus.PARTIAL):
             try:
                 # Pass the just-applied fill + fee so the ledger can record them.
