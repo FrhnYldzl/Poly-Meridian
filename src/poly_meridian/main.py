@@ -1016,7 +1016,8 @@ async def run() -> None:
     settings = get_settings()
     configure_logging(settings.log_level)
     log = structlog.get_logger("poly_meridian.main")
-    log.info("agent.boot", mode=settings.mode, version="0.1.0")
+    from poly_meridian import __version__
+    log.info("agent.boot", mode=settings.mode, version=__version__)
 
     try:
         start_http_server(settings.prometheus_port + 1)

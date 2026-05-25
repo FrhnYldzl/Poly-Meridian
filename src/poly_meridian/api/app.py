@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 import structlog
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -33,7 +33,7 @@ STATIC_DIR = Path(os.environ.get("STATIC_DIR", "/app/static"))
 def build_app(broker: AgentStateBroker) -> FastAPI:
     app = FastAPI(
         title="Poly Meridian Operator API",
-        version="0.1.0",
+        version="1.1.0",
         docs_url="/api/docs",
         openapi_url="/api/openapi.json",
     )
@@ -155,6 +155,112 @@ def build_app(broker: AgentStateBroker) -> FastAPI:
     async def disengage_kill_switch() -> dict[str, Any]:
         broker.update_kill_switch(engaged=False, reason=None)
         return {"engaged": False}
+
+    @app.post("/api/admin/reset-data")
+    async def admin_reset_data(
+        secret: str = Query(..., description="Shared secret from ADMIN_RESET_TOKEN env"),
+        confirm: str = Query("", description="Pass 'YES' to actually run"),
+        restart: bool = Query(True, description="Self-exit after wipe so Railway auto-restarts with fresh in-memory state"),
+    ) -> dict[str, Any]:
+        """v1.1 clean slate — TRUNCATE all trading-data tables + reset the
+        broker's in-memory feeds. Schema is preserved; row counts go to zero.
+
+        Auth: requires ADMIN_RESET_TOKEN env var to be set on the agent AND
+        the request to pass it as `?secret=...`. Without confirm=YES the
+        call is a no-op dry run that reports what WOULD be wiped.
+
+        Tables affected:
+          our_orders, strategy_signals, positions, pnl_daily,
+          news_articles, news_signals, market_embeddings,
+          orderbook_snapshots, trades, feature_snapshots, smart_wallets
+
+        Does NOT drop:
+          markets (refreshed by gamma_sync anyway)
+          schema itself
+        """
+        expected = os.environ.get("ADMIN_RESET_TOKEN", "")
+        if not expected:
+            raise HTTPException(
+                status_code=503,
+                detail="ADMIN_RESET_TOKEN not configured on the agent",
+            )
+        if secret != expected:
+            raise HTTPException(status_code=401, detail="bad_secret")
+
+        # Lazy-import so the API module stays import-light at boot.
+        from poly_meridian.storage import get_db
+
+        TARGETS = [
+            "our_orders",
+            "strategy_signals",
+            "positions",
+            "pnl_daily",
+            "news_signals",
+            "news_articles",
+            "market_embeddings",
+            "orderbook_snapshots",
+            "trades",
+            "feature_snapshots",
+            "smart_wallets",
+        ]
+        counts: dict[str, int] = {}
+        try:
+            db = await get_db()
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=f"db_unavailable: {exc}")
+
+        async with db.acquire() as conn:
+            for tbl in TARGETS:
+                try:
+                    row = await conn.fetchrow(f"SELECT COUNT(*) AS n FROM {tbl}")
+                    counts[tbl] = int(row["n"]) if row else 0
+                except Exception:
+                    counts[tbl] = -1   # table missing — schema didn't create it
+
+            dry_run = confirm.upper() != "YES"
+            if not dry_run:
+                for tbl in TARGETS:
+                    if counts.get(tbl, -1) < 0:
+                        continue
+                    try:
+                        await conn.execute(f"TRUNCATE TABLE {tbl} RESTART IDENTITY CASCADE")
+                    except Exception as exc:
+                        log.warning("admin_reset.truncate_failed", table=tbl, error=str(exc))
+
+        # Reset broker in-memory state so the dashboard reflects the wipe
+        # immediately (not just after the next agent restart).
+        if not dry_run:
+            broker.seed_signals([])
+            broker.seed_orders([])
+            broker.update_kill_switch(engaged=False, reason=None)
+
+        will_restart = bool(not dry_run and restart)
+        if will_restart:
+            # Self-exit AFTER the response flushes so Railway brings us back
+            # up with a fresh process — that wipes the in-memory ledger /
+            # broker state / cluster builder / wallet tier maps cleanly.
+            import signal as _signal
+            async def _self_exit() -> None:
+                await asyncio.sleep(2.0)
+                log.info("admin_reset.self_exit_for_restart")
+                os.kill(os.getpid(), _signal.SIGTERM)
+            asyncio.create_task(_self_exit())
+
+        return {
+            "dry_run": dry_run,
+            "version": "1.1.0",
+            "row_counts_before": counts,
+            "restart_scheduled": will_restart,
+            "note": (
+                "data wiped + restart in ~2s (Railway will bring the agent back fresh)"
+                if will_restart
+                else (
+                    "data wiped; restart agent to clear in-memory state"
+                    if not dry_run
+                    else "dry run — pass confirm=YES to actually truncate"
+                )
+            ),
+        }
 
     @app.get("/api/stream")
     async def stream() -> StreamingResponse:
