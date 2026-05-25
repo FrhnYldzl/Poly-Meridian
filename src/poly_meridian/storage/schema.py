@@ -172,6 +172,28 @@ CREATE TABLE IF NOT EXISTS pnl_daily (
     trade_count     INT NOT NULL,
     win_count       INT NOT NULL
 );
+
+-- Per-fill ledger entries — every BUY/SELL leaves an immutable row here.
+-- Source of truth for per-strategy P&L attribution and the realized leg
+-- of pnl_daily. PRIMARY KEY is (order_id, fill_seq) because a single
+-- order can have multiple partial fills.
+CREATE TABLE IF NOT EXISTS ledger_entries (
+    id              BIGSERIAL PRIMARY KEY,
+    ts              TIMESTAMPTZ NOT NULL,
+    order_id        TEXT NOT NULL,
+    fill_seq        INT NOT NULL DEFAULT 0,
+    strategy        TEXT NOT NULL,
+    token_id        TEXT NOT NULL,
+    side            TEXT NOT NULL CHECK (side IN ('BUY','SELL')),
+    qty             NUMERIC NOT NULL,
+    price           NUMERIC NOT NULL,
+    notional        NUMERIC NOT NULL,
+    fee             NUMERIC NOT NULL DEFAULT 0,
+    realized_pnl    NUMERIC,
+    UNIQUE (order_id, fill_seq)
+);
+CREATE INDEX IF NOT EXISTS idx_ledger_strategy_ts ON ledger_entries(strategy, ts DESC);
+CREATE INDEX IF NOT EXISTS idx_ledger_token_ts ON ledger_entries(token_id, ts DESC);
 """
 
 

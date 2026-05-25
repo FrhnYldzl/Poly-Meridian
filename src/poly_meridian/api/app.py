@@ -223,6 +223,20 @@ def build_app(broker: AgentStateBroker) -> FastAPI:
             "results": results,
         }
 
+    @app.get("/api/strategy-pnl")
+    async def strategy_pnl(days: int = 30) -> dict[str, Any]:
+        """Per-strategy realized PNL + fill counts + win rate. Aggregated
+        from ledger_entries over the last N days. Drives the attribution
+        column on the Strategies page."""
+        from poly_meridian.storage import get_db
+        from poly_meridian.storage.writers import fetch_pnl_per_strategy
+        try:
+            db = await get_db()
+            rows = await fetch_pnl_per_strategy(db, days=max(1, min(365, int(days))))
+        except Exception as exc:
+            return {"error": str(exc)[:200], "rows": []}
+        return {"days": int(days), "rows": rows}
+
     @app.post("/api/backtest/run")
     async def run_backtest(
         seed: int = 42,

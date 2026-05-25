@@ -5,7 +5,18 @@ import { PageHeader } from "@/components/page-header";
 import { Panel } from "@/components/panel";
 import { StrategiesPanel } from "@/components/strategies-panel";
 import { useSharedAgentState } from "@/hooks/use-shared-agent-state";
-import { cn, relativeTime } from "@/lib/utils";
+import { cn, formatUsd, relativeTime } from "@/lib/utils";
+
+const API = process.env.NEXT_PUBLIC_API_URL ?? "";
+
+interface StrategyPnlRow {
+  strategy: string;
+  fill_count: number;
+  realized_pnl: number | null;
+  fees: number | null;
+  gross_notional: number | null;
+  win_count: number;
+}
 
 const STRATEGY_DETAIL: Record<string, { description: string; section: string; tone: string }> = {
   arbitrage: {
@@ -51,6 +62,45 @@ export default function StrategiesPage() {
   const { snapshot } = useSharedAgentState();
   const enabled = snapshot?.strategies_enabled ?? [];
   const signals = snapshot?.last_signals ?? [];
+
+  // Per-strategy PNL attribution — fetched from /api/strategy-pnl every
+  // 30s. ledger_entries-driven so it survives restarts.
+  const [pnlRows, setPnlRows] = useState<StrategyPnlRow[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    async function load() {
+      try {
+        const r = await fetch(`${API}/api/strategy-pnl?days=30`);
+        const j = await r.json();
+        if (!cancelled && Array.isArray(j.rows)) setPnlRows(j.rows);
+      } catch {
+        /* ignore */
+      }
+    }
+    load();
+    const id = setInterval(load, 30_000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, []);
+
+  const pnlByStrategy: Record<string, StrategyPnlRow> = {};
+  for (const r of pnlRows) {
+    const base = (r.strategy || "").split(".")[0];
+    if (!base) continue;
+    // Multiple sub-strategies under same base — sum into one bucket.
+    const existing = pnlByStrategy[base];
+    if (!existing) {
+      pnlByStrategy[base] = { ...r, strategy: base };
+    } else {
+      existing.fill_count += r.fill_count;
+      existing.realized_pnl = (existing.realized_pnl ?? 0) + (r.realized_pnl ?? 0);
+      existing.fees = (existing.fees ?? 0) + (r.fees ?? 0);
+      existing.gross_notional = (existing.gross_notional ?? 0) + (r.gross_notional ?? 0);
+      existing.win_count += r.win_count;
+    }
+  }
 
   // Compute per-strategy stats.
   const stats: Record<string, PerStratStats> = {};
@@ -116,6 +166,44 @@ export default function StrategiesPage() {
                     value={s.lastEdgeBps !== null ? `${s.lastEdgeBps.toFixed(0)} bps` : "—"}
                   />
                 </div>
+                {/* Per-strategy PNL attribution (30-day window).
+                    Sourced from ledger_entries grouped by strategy base name. */}
+                {(() => {
+                  const pnl = pnlByStrategy[name];
+                  if (!pnl || pnl.fill_count === 0) {
+                    return (
+                      <div className="font-mono text-[10px] text-terminal-dim">
+                        no fills in 30d yet
+                      </div>
+                    );
+                  }
+                  const realized = pnl.realized_pnl ?? 0;
+                  const winRate = pnl.fill_count > 0 ? pnl.win_count / pnl.fill_count : 0;
+                  const realizedTone =
+                    realized > 0
+                      ? "text-terminal-green"
+                      : realized < 0
+                        ? "text-terminal-red"
+                        : "text-terminal-text";
+                  return (
+                    <div className="grid grid-cols-4 gap-2 border-t border-terminal-border pt-3 font-mono text-[10px]">
+                      <Stat label="Fills (30d)" value={String(pnl.fill_count)} />
+                      <Stat
+                        label="Realized"
+                        value={formatUsd(realized, { showSign: true })}
+                        tone={realizedTone}
+                      />
+                      <Stat
+                        label="Win rate"
+                        value={`${(winRate * 100).toFixed(0)}%`}
+                      />
+                      <Stat
+                        label="Fees"
+                        value={formatUsd(pnl.fees ?? 0)}
+                      />
+                    </div>
+                  );
+                })()}
                 <div className="font-mono text-[10px] text-terminal-dim">
                   Last seen:{" "}
                   <span className="text-terminal-text">
@@ -131,11 +219,21 @@ export default function StrategiesPage() {
   );
 }
 
-function Stat({ label, value }: { label: string; value: string }) {
+function Stat({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: string;
+  tone?: string;
+}) {
   return (
     <div>
       <div className="text-[9px] uppercase tracking-wider text-terminal-dim">{label}</div>
-      <div className="numeric mt-0.5 text-sm text-terminal-textBright">{value}</div>
+      <div className={cn("numeric mt-0.5 text-sm", tone ?? "text-terminal-textBright")}>
+        {value}
+      </div>
     </div>
   );
 }

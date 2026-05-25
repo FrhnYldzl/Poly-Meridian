@@ -478,6 +478,61 @@ async def upsert_pnl_daily(
         )
 
 
+async def insert_ledger_entry(
+    db: Database,
+    *,
+    ts: datetime,
+    order_id: str,
+    fill_seq: int,
+    strategy: str,
+    token_id: str,
+    side: str,
+    qty: Decimal,
+    price: Decimal,
+    notional: Decimal,
+    fee: Decimal,
+    realized_pnl: Decimal | None,
+) -> None:
+    """Persist a single per-fill ledger entry. (order_id, fill_seq) is
+    unique — re-inserting the same fill is a no-op via ON CONFLICT."""
+    async with db.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO ledger_entries (
+                ts, order_id, fill_seq, strategy, token_id, side,
+                qty, price, notional, fee, realized_pnl
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+            ON CONFLICT (order_id, fill_seq) DO NOTHING
+            """,
+            ts, order_id, fill_seq, strategy, token_id, side,
+            qty, price, notional, fee, realized_pnl,
+        )
+
+
+async def fetch_pnl_per_strategy(
+    db: Database, *, days: int = 30
+) -> list[dict[str, Any]]:
+    """Per-strategy realized PNL + fill counts + win rate over the last
+    N days. Drives the Strategies page's attribution column."""
+    async with db.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT strategy,
+                   COUNT(*) AS fill_count,
+                   SUM(CASE WHEN side='SELL' THEN COALESCE(realized_pnl, 0) ELSE 0 END)::float8 AS realized_pnl,
+                   SUM(fee)::float8 AS fees,
+                   SUM(notional)::float8 AS gross_notional,
+                   SUM(CASE WHEN realized_pnl > 0 THEN 1 ELSE 0 END) AS win_count
+            FROM ledger_entries
+            WHERE ts >= NOW() - ($1 || ' days')::INTERVAL
+            GROUP BY strategy
+            ORDER BY realized_pnl DESC NULLS LAST
+            """,
+            str(days),
+        )
+        return [dict(r) for r in rows]
+
+
 async def fetch_pnl_daily(
     db: Database, *, days: int = 30
 ) -> list[dict[str, Any]]:

@@ -56,10 +56,12 @@ from poly_meridian.settings import get_settings
 from poly_meridian.storage import close_cache, close_db, get_cache, get_db
 from poly_meridian.storage.writers import (
     fetch_pnl_daily,
+    fetch_pnl_per_strategy,
     fetch_positions,
     fetch_recent_news_signals,
     fetch_recent_orders,
     fetch_recent_strategy_signals,
+    insert_ledger_entry,
     insert_news_article,
     insert_strategy_signal,
     upsert_markets,
@@ -1179,6 +1181,27 @@ async def run() -> None:
                 f"KILL-SWITCH ENGAGED · {reason or 'no reason'}",
                 level="error",
             )
+            # FLATTEN: cancel every open order so engaging the switch
+            # actually closes risk, not just blocks new orders. Fire-and-
+            # forget so the broker hook returns immediately. PaperExecutor
+            # + LiveExecutor both implement cancel_all_open_orders.
+            executor = getattr(pipeline, "executor", None)
+            if executor is not None and hasattr(executor, "cancel_all_open_orders"):
+                async def _flatten() -> None:
+                    try:
+                        n = await executor.cancel_all_open_orders()
+                        log.warning("kill_switch.flatten", cancelled=n)
+                        if n > 0:
+                            await slack_alert_async(
+                                f"kill-switch flatten: cancelled {n} open orders",
+                                level="warn",
+                            )
+                    except Exception as exc:
+                        log.warning("kill_switch.flatten_failed", error=str(exc)[:120])
+                try:
+                    asyncio.create_task(_flatten())
+                except RuntimeError:
+                    pass
         else:
             post_slack_alert("kill-switch disengaged · trading resumed", level="warn")
 
@@ -1274,6 +1297,39 @@ async def run() -> None:
         signal_hook=_persist_signal,
         order_hook=_persist_order,
     )
+
+    # Phase L.2 — every Ledger fill mirrored to DB ledger_entries. Pipeline
+    # captures the fill, hands a dict to this hook which fires async insert.
+    def _persist_ledger_entry(payload: dict[str, Any]) -> None:
+        if not db_ok:
+            return
+        async def _go() -> None:
+            try:
+                db = await get_db()
+                await insert_ledger_entry(
+                    db,
+                    ts=payload["ts"],
+                    order_id=str(payload["order_id"]),
+                    fill_seq=int(payload["fill_seq"]),
+                    strategy=str(payload["strategy"]),
+                    token_id=str(payload["token_id"]),
+                    side=str(payload["side"]),
+                    qty=Decimal(str(payload["qty"])),
+                    price=Decimal(str(payload["price"])),
+                    notional=Decimal(str(payload["notional"])),
+                    fee=Decimal(str(payload["fee"])),
+                    realized_pnl=(
+                        Decimal(str(payload["realized_pnl"]))
+                        if payload.get("realized_pnl") is not None else None
+                    ),
+                )
+            except Exception as exc:
+                log.debug("persist.ledger_entry_failed", error=str(exc)[:120])
+        try:
+            asyncio.create_task(_go())
+        except RuntimeError:
+            pass
+    pipeline.on_ledger_entry = _persist_ledger_entry  # type: ignore[attr-defined]
 
     # ---- Boot backfill: restore last 50 signals/orders from DB so the
     # dashboard doesn't go blank after a Railway restart. -----------

@@ -151,6 +151,23 @@ class PaperExecutor(Executor):
             log.info("paper.cancel", order_id=order_id)
             return True
 
+    async def cancel_all_open_orders(self) -> int:
+        """Cancel every resting / partially-filled order. Called by the
+        kill-switch flatten path so engaging the switch actually closes
+        risk, not just blocks new orders."""
+        async with self._lock:
+            n = 0
+            for order_id, order in list(self._orders.items()):
+                if order.status in (
+                    OrderStatus.PENDING, OrderStatus.LIVE, OrderStatus.PARTIAL,
+                ):
+                    order.status = OrderStatus.CANCELLED
+                    self._resting.pop(order_id, None)
+                    n += 1
+            if n > 0:
+                log.warning("paper.cancel_all_open", count=n)
+            return n
+
     async def reconcile(self) -> None:
         """Walk resting orders, try to fill any that the current book crosses.
 

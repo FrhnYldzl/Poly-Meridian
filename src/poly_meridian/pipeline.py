@@ -286,13 +286,49 @@ class Pipeline:
             filled_qty = order.filled_size
             fill_price = order.avg_fill_price
             fee = fee or Decimal(0)
-        self.ledger.apply_fill(
+        entry = self.ledger.apply_fill(
             ts=order.ts_filled or datetime.now(UTC),
             order=order,
             filled_qty=filled_qty,
             fill_price=fill_price,
             fee=fee or Decimal(0),
         )
+
+        # Persist the ledger entry (Phase L.2). Fire-and-forget — DB outage
+        # never blocks the fill path. fill_seq distinguishes partial fills
+        # on the same order: count prior entries for this order_id.
+        ledger_persist = getattr(self, "on_ledger_entry", None)
+        if ledger_persist is not None and entry is not None:
+            fill_seq = sum(
+                1 for e in self.ledger.entries() if e.order_id == order.order_id
+            ) - 1   # 0-indexed; current entry is already in the list
+            try:
+                # Compute realized PnL on SELL using FIFO-ish proxy: realized
+                # per share = fill_price - avg_cost_before. We can read it
+                # off the LedgerEntry's notional sign convention.
+                realized = None
+                pos = self.ledger.get_position(order.token_id)
+                if str(order.side).endswith("SELL"):
+                    # `notional` for SELL is +cash-in; realized PnL per fill
+                    # is (price - avg_cost_at_time_of_fill) × qty. We don't
+                    # know the pre-fill avg_cost cleanly here, so approximate
+                    # by leaving None — fetch_pnl_per_strategy SUM-skips Nones.
+                    realized = None
+                ledger_persist({
+                    "ts": entry.ts,
+                    "order_id": entry.order_id,
+                    "fill_seq": max(0, fill_seq),
+                    "strategy": entry.strategy,
+                    "token_id": entry.token_id,
+                    "side": str(entry.side).split(".")[-1],
+                    "qty": abs(entry.qty),
+                    "price": entry.price,
+                    "notional": abs(entry.notional),
+                    "fee": entry.fee,
+                    "realized_pnl": realized,
+                })
+            except Exception:
+                pass
 
     def context_metrics(self) -> dict[str, Any]:
         return {

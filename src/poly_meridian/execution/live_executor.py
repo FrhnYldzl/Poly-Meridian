@@ -170,6 +170,27 @@ class LiveExecutor(Executor):
                 order.status = OrderStatus.CANCELLED
             return ok
 
+    async def cancel_all_open_orders(self) -> int:
+        """Kill-switch flatten path. Cancels every pending/live/partial
+        order at the venue. Best-effort: per-order failures logged but
+        don't abort the sweep (a partial flatten is better than none)."""
+        n = 0
+        async with self._lock:
+            open_ids = [
+                oid for oid, o in self._orders.items()
+                if o.status in (OrderStatus.PENDING, OrderStatus.LIVE, OrderStatus.PARTIAL)
+            ]
+        for oid in open_ids:
+            try:
+                ok = await self.cancel(oid)
+                if ok:
+                    n += 1
+            except Exception as exc:
+                log.warning("live.cancel_all_partial_fail", order_id=oid, error=str(exc))
+        if n > 0:
+            log.warning("live.cancel_all_open", count=n, attempted=len(open_ids))
+        return n
+
     async def apply_user_ws_event(self, evt: dict[str, object]) -> None:
         """Consume a user-channel WS event (order or trade) and update local
         state. Primary fill path in live mode — `reconcile()` is only the
