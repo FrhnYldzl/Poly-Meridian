@@ -194,8 +194,8 @@ class Pipeline:
                             "rationale": s.rationale,
                             "market_question": market.question,
                         })
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        log.debug("pipeline.push_signal_failed", error=str(exc)[:120])
 
         if not signals:
             return None
@@ -267,8 +267,8 @@ class Pipeline:
                     "category": market.category,
                     "trade_metrics": tm.asdict() if tm is not None else None,
                 })
-            except Exception:
-                pass
+            except Exception as exc:
+                log.debug("pipeline.push_order_failed", error=str(exc)[:120])
         return order
 
     async def on_fill(
@@ -327,8 +327,8 @@ class Pipeline:
                     "fee": entry.fee,
                     "realized_pnl": realized,
                 })
-            except Exception:
-                pass
+            except Exception as exc:
+                log.debug("pipeline.ledger_persist_failed", error=str(exc)[:120])
 
     def context_metrics(self) -> dict[str, Any]:
         return {
