@@ -80,38 +80,22 @@ class DefaultResolver(CategoryResolver):
         # with the "market_p" anchor passed in by the caller via context.
         # The strategy's evaluate() will then compute the actual edge.
 
-        # Anchor estimate at 0.50 (no information) and tilt with our heuristics.
-        # The strategy compares this to actual market_p; if they differ by
-        # more than min_edge, a signal fires. This gives us coverage on
-        # ANY market where our heuristic disagrees with the book.
-
-        liquidity = float(market.liquidity_usd or 0)
-        if liquidity < self.liq_floor:
-            # Thin markets are too dangerous to fade — skip.
-            return None
-
-        now = ctx.now or datetime.now(timezone.utc)
-        days_to_resolution: float | None = None
-        if market.end_date_iso is not None:
-            delta = market.end_date_iso - now
-            days_to_resolution = max(0.0, delta.total_seconds() / 86_400.0)
-
-        # ----- Heuristic 1: time-decay anchor toward 0.50 -----
-        # Far-future markets: pull modestly toward 0.50 (markets overweight
-        # tails). Close-resolution markets: leave alone (operator priced in).
-        time_weight = 0.0
-        if days_to_resolution is not None and days_to_resolution > 0:
-            # Half-life decay — 30 days out = 50% weight, etc.
-            time_weight = min(
-                self.time_weight_max,
-                self.time_weight_max * (1.0 - 0.5 ** (days_to_resolution / self.half_life_days)),
-            )
-
-        # Without a price input we can't tilt — but we can give the strategy
-        # a probability estimate of 0.50 with this weight, so it triggers a
-        # YES signal on any sub-0.45 market and a NO signal on any 0.55+
-        # market (subject to the strategy's min_edge cutoff).
-        our_p_anchor = 0.50
+        # Phase N.7: hard-disable the anchor-at-0.5 path.
+        #
+        # The old design returned p_yes=0.50 for ANY liquid market, which the
+        # FundamentalsStrategy compared to market_p_yes and fired BUY_NO on
+        # every market priced >0.5 (most favorites) and BUY_YES on every
+        # market <0.5 — a systematic fade-the-favorite policy. Pre-resolution
+        # Polymarket pricing is generally INFORMATIONALLY EFFICIENT, so
+        # fading the favorite loses ~55% of the time. EV-negative once fees
+        # are netted.
+        #
+        # Until real category resolvers (Politics polls, Sports Elo, Crypto
+        # funding, Macro calendar) land with actual EV-positive signal, the
+        # safest fallback is to stay silent. FundamentalsStrategy will just
+        # return None for any market whose category-specific resolver also
+        # returns None, instead of opening a directional bet on false signal.
+        return None
 
         # ----- Heuristic 2: liquidity confidence -----
         # High liquidity → market is informed → trust it more → lower confidence

@@ -96,6 +96,18 @@ class DefaultRiskPolicy(RiskPolicy):
         self.kill_switch = kill_switch or KillSwitch()
         # condition_id -> reduced size_pct, set during evaluate(), consumed by size()
         self._reduced_size_pct: dict[str, float] = {}
+        # Phase N.8: slippage drift reactive cap. When the SlippageMonitor's
+        # drift_bps exceeds this threshold, we automatically halve every
+        # strategy's size_pct via a multiplier applied in size(). Operator
+        # can flip drift_size_multiplier = 1.0 to disable.
+        self._slippage_drift_bps: float | None = None
+        self.drift_alarm_bps = 200.0     # > 200 bps deviation → react
+        self.drift_size_multiplier = 0.5  # halve sizing while drift is bad
+
+    def update_slippage_drift(self, drift_bps: float | None) -> None:
+        """Called by main.py's broker_refresh_loop with the latest measured
+        drift_bps from SlippageMonitor. None = no data yet."""
+        self._slippage_drift_bps = drift_bps
 
     def is_kill_switch_engaged(self) -> bool:
         return self.kill_switch.engaged
@@ -190,6 +202,20 @@ class DefaultRiskPolicy(RiskPolicy):
 
         size_pct = self._reduced_size_pct.pop(signal.condition_id, signal.size_pct)
         size_pct = min(size_pct, self.limits.max_position_pct_of_bankroll)
+        # Phase N.8: if slippage is materially worse than our model predicts,
+        # halve sizing automatically. Prevents amplifying losses during
+        # adverse book regimes.
+        if (
+            self._slippage_drift_bps is not None
+            and self._slippage_drift_bps > self.drift_alarm_bps
+        ):
+            size_pct = size_pct * self.drift_size_multiplier
+            log.warning(
+                "risk.slippage_drift_throttle",
+                drift_bps=self._slippage_drift_bps,
+                multiplier=self.drift_size_multiplier,
+                reduced_size_pct=size_pct,
+            )
         if size_pct <= 0:
             return None
 
@@ -202,6 +228,15 @@ class DefaultRiskPolicy(RiskPolicy):
         if size_units <= 0:
             return None
 
+        # Phase N.4 — pass arb partner-leg through so the router can submit
+        # both legs concurrently. Side mapping: BUY_YES→Side.BUY on YES,
+        # BUY_NO→Side.BUY on NO (Polymarket has no SELL-to-open, both legs
+        # are BUY-side bets on complementary outcomes).
+        paired_side: Side | None = None
+        if signal.paired_side is not None:
+            # Whatever the partner action is, we're BUYING the partner token.
+            paired_side = Side.BUY
+
         return TradeDecision(
             ts=signal.ts,
             strategy=self.strategy_name,
@@ -210,6 +245,9 @@ class DefaultRiskPolicy(RiskPolicy):
             order_type=OrderType.GTC,
             price=price,
             size=size_units,
+            paired_token=signal.paired_token,
+            paired_price=signal.paired_price,
+            paired_side=paired_side,
         )
 
     def _reject(self, signal: AggregatedSignal, reason: str, **kw: object) -> RiskDecision:

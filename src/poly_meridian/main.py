@@ -450,7 +450,15 @@ async def _broker_refresh_loop(
             sm = getattr(pipeline, "slippage_monitor", None)
             if sm is not None:
                 try:
-                    broker.snapshot.slippage_summary = sm.summary()
+                    summary = sm.summary()
+                    broker.snapshot.slippage_summary = summary
+                    # Phase N.8: feed live drift to the risk policy so the
+                    # auto-throttle (halve size when drift > 200 bps) is
+                    # reactive instead of just observability.
+                    try:
+                        pipeline.risk.update_slippage_drift(summary.get("drift_bps"))
+                    except Exception:
+                        pass
                 except Exception:
                     pass
 

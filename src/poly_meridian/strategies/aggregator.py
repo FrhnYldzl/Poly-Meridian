@@ -136,6 +136,31 @@ class SignalAggregator:
         liquidity = float(market.liquidity_usd) if (market is not None and market.liquidity_usd) else None
         token_id = direction_token.get(direction, sigs[0].token_id)
 
+        # Phase N.4 — if an arbitrage signal contributed to this aggregate,
+        # lift the partner-token info (NO leg for a YES-side arb signal)
+        # so the router can submit both legs atomically. Without this the
+        # arb is unhedged directional (BUG #5).
+        paired_token: str | None = None
+        paired_price: Decimal | None = None
+        paired_side: Action | None = None
+        for s in sigs:
+            if not s.strategy.startswith("arbitrage"):
+                continue
+            partner = s.rationale.get("partner_token")
+            no_ask = s.rationale.get("no_ask")
+            if partner and no_ask:
+                paired_token = str(partner)
+                try:
+                    paired_price = Decimal(str(no_ask))
+                except Exception:
+                    paired_price = None
+                # If primary leg is BUY_YES, partner is BUY_NO (complete set arb).
+                paired_side = (
+                    Action.BUY_NO if s.suggested_action == Action.BUY_YES
+                    else Action.BUY_YES
+                )
+                break
+
         return AggregatedSignal(
             ts=datetime.now(UTC),
             condition_id=condition_id,
@@ -147,6 +172,9 @@ class SignalAggregator:
             proposed_price=proposed_price,
             category=category,
             market_liquidity_usd=liquidity,
+            paired_token=paired_token,
+            paired_price=paired_price,
+            paired_side=paired_side,
             contributors=contributors,
         )
 

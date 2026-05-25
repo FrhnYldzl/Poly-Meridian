@@ -137,6 +137,11 @@ class AggregatedSignal(BaseModel):
     category: str | None = None
     market_liquidity_usd: float | None = None
     contributors: list[str] = Field(default_factory=list)
+    # Phase N.4: arbitrage partner-leg metadata, lifted by the aggregator from
+    # the contributing strategy's rationale and passed through to the router.
+    paired_token: str | None = None
+    paired_price: Decimal | None = None
+    paired_side: Action | None = None
 
 
 class TradeDecision(BaseModel):
@@ -151,6 +156,13 @@ class TradeDecision(BaseModel):
     order_type: OrderType
     price: Decimal | None
     size: Decimal
+    # Phase N.4 — optional second leg for arbitrage. When set, the OrderRouter
+    # submits both legs CONCURRENTLY. Single-leg arb is unhedged directional,
+    # which is what BUG #5 was: ArbitrageStrategy emitted only the YES side,
+    # the router dropped the NO partner, and the "arb" became a long-YES bet.
+    paired_token: str | None = None
+    paired_price: Decimal | None = None
+    paired_side: Side | None = None
 
 
 class Order(BaseModel):
