@@ -308,14 +308,46 @@ async def _broker_refresh_loop(
             # we don't have the strategy's original edge handy here.
             open_positions_out: list[dict[str, Any]] = []
             tok_to_cat = getattr(pipeline, "token_to_category", {}) or {}
-            # Pull resolution dates from the market cache so we can attach
-            # days_to_resolution + compute thesis-NAV. Cache keyed by token_id.
+            # Pull resolution dates AND market metadata (question, slug,
+            # outcome side) from the market cache so positions can render
+            # human-readable rows + a direct Polymarket link instead of
+            # raw token IDs.
             tok_to_end: dict[str, datetime] = {}
+            tok_to_meta: dict[str, dict[str, Any]] = {}
             for raw_m in market_cache.get("markets", []) or []:
                 m_obj = gamma_market_to_domain(raw_m)
-                if m_obj is not None and m_obj.end_date_iso is not None:
+                if m_obj is None:
+                    continue
+                if m_obj.end_date_iso is not None:
                     tok_to_end[m_obj.yes_token_id] = m_obj.end_date_iso
                     tok_to_end[m_obj.no_token_id] = m_obj.end_date_iso
+                # Gamma's "slug" is the per-market slug; "eventSlug" is the
+                # parent event. Polymarket's market URL routes off the
+                # event slug; fall back to market slug if event is missing.
+                ev_slug = raw_m.get("eventSlug")
+                if not ev_slug:
+                    events_arr = raw_m.get("events")
+                    if isinstance(events_arr, list) and events_arr:
+                        first = events_arr[0]
+                        if isinstance(first, dict):
+                            ev_slug = first.get("slug")
+                market_slug = raw_m.get("slug")
+                question = m_obj.question
+                # YES position vs NO position — which outcome we're long.
+                tok_to_meta[m_obj.yes_token_id] = {
+                    "question": question,
+                    "outcome": "Yes",
+                    "event_slug": ev_slug,
+                    "market_slug": market_slug,
+                    "condition_id": m_obj.condition_id,
+                }
+                tok_to_meta[m_obj.no_token_id] = {
+                    "question": question,
+                    "outcome": "No",
+                    "event_slug": ev_slug,
+                    "market_slug": market_slug,
+                    "condition_id": m_obj.condition_id,
+                }
             now_ts = datetime.now(UTC)
             thesis_position_value = 0.0     # sum(qty * avg_cost) — if positions revert to entry
             liquidation_position_value = 0.0  # sum(qty * last_mark) — current MTM
@@ -337,6 +369,17 @@ async def _broker_refresh_loop(
                 unrealized = qty_f * (last_mark_f - avg_cost_f)
                 thesis_position_value += qty_f * avg_cost_f
                 liquidation_position_value += qty_f * last_mark_f
+                meta = tok_to_meta.get(p.token_id) or {}
+                ev_slug = meta.get("event_slug")
+                mkt_slug = meta.get("market_slug")
+                # Polymarket routes by event slug — fall back to market slug,
+                # then to a generic search-by-condition_id if neither exists.
+                if ev_slug:
+                    polymarket_url = f"https://polymarket.com/event/{ev_slug}"
+                elif mkt_slug:
+                    polymarket_url = f"https://polymarket.com/market/{mkt_slug}"
+                else:
+                    polymarket_url = None
                 open_positions_out.append({
                     "token_id": p.token_id,
                     "qty": qty_f,
@@ -346,11 +389,15 @@ async def _broker_refresh_loop(
                     "entry": entry_by_token.get(p.token_id),
                     "trade_metrics": tm.asdict() if tm is not None else None,
                     "category": tok_to_cat.get(p.token_id),
-                    # Resolution context — prediction-market specific.
-                    # Without this the operator can't tell a 1-day swing from
-                    # a 90-day capital lock.
                     "days_to_resolution": days_to_resolution,
                     "end_date_iso": end_date.isoformat() if end_date else None,
+                    # Market metadata so the row is HUMAN-READABLE instead
+                    # of "758459207417…". Operator can click ↗ to open
+                    # the market on Polymarket directly.
+                    "question": meta.get("question"),
+                    "outcome": meta.get("outcome"),
+                    "condition_id": meta.get("condition_id"),
+                    "polymarket_url": polymarket_url,
                 })
             # thesis NAV = cash + sum(qty * avg_cost). If every open position
             # eventually MTM'd back to the price we paid (which is where our

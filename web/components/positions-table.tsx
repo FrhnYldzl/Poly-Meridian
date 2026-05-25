@@ -24,7 +24,8 @@ export function PositionsTable({ positions }: PositionsTableProps) {
         <table className="w-full border-collapse text-left">
           <thead className="sticky top-0 z-10 bg-terminal-surfaceAlt text-[10px] uppercase tracking-wider text-terminal-dim">
             <tr>
-              <th className="px-3 py-1.5 font-medium">Token</th>
+              <th className="px-3 py-1.5 font-medium">Market</th>
+              <th className="px-3 py-1.5 font-medium">Outcome</th>
               <th className="px-3 py-1.5 font-medium">Strategy</th>
               <th
                 className="px-3 py-1.5 text-right font-medium"
@@ -75,10 +76,63 @@ function Row({ p }: { p: Position }) {
         ? "text-terminal-red"
         : "text-terminal-amber"
     : "text-terminal-dim";
+  const question = p.question ?? null;
+  const polyUrl = p.polymarket_url ?? null;
+  const marketTooltip = [
+    question ? `market: ${question}` : null,
+    p.outcome ? `outcome: ${p.outcome}` : null,
+    p.condition_id ? `condition: ${p.condition_id}` : null,
+    `token_id: ${p.token_id}`,
+  ]
+    .filter(Boolean)
+    .join("\n");
+  const outcomeTone =
+    p.outcome === "Yes"
+      ? "border-terminal-green/50 bg-terminal-green/10 text-terminal-green"
+      : p.outcome === "No"
+        ? "border-terminal-red/50 bg-terminal-red/10 text-terminal-red"
+        : "border-terminal-border text-terminal-dim";
   return (
     <tr className="border-t border-terminal-border/60 hover:bg-terminal-surfaceAlt/50">
-      <td className="px-3 py-1.5 text-terminal-amber" title={p.token_id}>
-        {p.token_id.slice(0, 12)}…
+      <td
+        className="max-w-[320px] px-3 py-1.5 text-terminal-text"
+        title={marketTooltip}
+      >
+        <div className="flex items-center gap-1.5">
+          <span className="truncate">
+            {question ?? (
+              <span className="text-terminal-amber">
+                {p.token_id.slice(0, 12)}…
+              </span>
+            )}
+          </span>
+          {polyUrl && (
+            <a
+              href={polyUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="shrink-0 text-[10px] text-terminal-dim hover:text-terminal-amber"
+              title="Open on Polymarket"
+              onClick={(e) => e.stopPropagation()}
+            >
+              ↗
+            </a>
+          )}
+        </div>
+      </td>
+      <td className="px-3 py-1.5">
+        {p.outcome ? (
+          <span
+            className={cn(
+              "rounded border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider",
+              outcomeTone,
+            )}
+          >
+            {p.outcome}
+          </span>
+        ) : (
+          <span className="text-[10px] text-terminal-dim">—</span>
+        )}
       </td>
       <td className="px-3 py-1.5">
         {strat ? (

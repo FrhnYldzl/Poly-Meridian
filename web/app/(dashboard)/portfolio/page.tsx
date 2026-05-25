@@ -158,36 +158,79 @@ export default function PortfolioPage() {
               </div>
             ) : (
               <ul className="divide-y divide-terminal-border/60">
-                {positions.map((p) => (
-                  <li
-                    key={p.token_id}
-                    className="grid grid-cols-[100px_1fr_60px_70px_70px] items-center gap-2 px-3 py-1.5 hover:bg-terminal-surfaceAlt/50"
-                  >
-                    <span className="text-terminal-amber" title={p.token_id}>
-                      {p.token_id.slice(0, 10)}…
-                    </span>
-                    <span
-                      className={cn(
-                        "rounded border border-terminal-border px-1.5 py-0.5 text-[10px] uppercase tracking-wider",
-                        p.category
-                          ? CATEGORY_COLOR[p.category] ?? "text-terminal-text"
-                          : "text-terminal-dim",
-                      )}
+                {positions.map((p) => {
+                  const tip = [
+                    p.question ? `market: ${p.question}` : null,
+                    p.outcome ? `outcome: ${p.outcome}` : null,
+                    p.condition_id ? `condition: ${p.condition_id}` : null,
+                    `token_id: ${p.token_id}`,
+                  ]
+                    .filter(Boolean)
+                    .join("\n");
+                  return (
+                    <li
+                      key={p.token_id}
+                      className="grid grid-cols-[1fr_60px_60px_70px_80px] items-center gap-2 px-3 py-1.5 hover:bg-terminal-surfaceAlt/50"
                     >
-                      {p.category ?? "—"}
-                    </span>
-                    <span className="numeric text-right">{p.avg_cost.toFixed(4)}</span>
-                    <span className="numeric text-right">{p.last_mark.toFixed(4)}</span>
-                    <span
-                      className={cn(
-                        "numeric text-right",
-                        p.unrealized_pnl >= 0 ? "text-terminal-green" : "text-terminal-red",
-                      )}
-                    >
-                      {formatUsd(p.unrealized_pnl, { showSign: true })}
-                    </span>
-                  </li>
-                ))}
+                      <div
+                        className="flex min-w-0 items-center gap-1.5 text-terminal-text"
+                        title={tip}
+                      >
+                        <span className="truncate">
+                          {p.question ?? (
+                            <span className="text-terminal-amber">
+                              {p.token_id.slice(0, 10)}…
+                            </span>
+                          )}
+                        </span>
+                        {p.polymarket_url && (
+                          <a
+                            href={p.polymarket_url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="shrink-0 text-[10px] text-terminal-dim hover:text-terminal-amber"
+                            title="Open on Polymarket"
+                          >
+                            ↗
+                          </a>
+                        )}
+                      </div>
+                      <span
+                        className={cn(
+                          "rounded border px-1.5 py-0.5 text-center text-[10px] font-semibold uppercase tracking-wider",
+                          p.outcome === "Yes"
+                            ? "border-terminal-green/50 bg-terminal-green/10 text-terminal-green"
+                            : p.outcome === "No"
+                              ? "border-terminal-red/50 bg-terminal-red/10 text-terminal-red"
+                              : "border-terminal-border text-terminal-dim",
+                        )}
+                      >
+                        {p.outcome ?? "—"}
+                      </span>
+                      <span
+                        className={cn(
+                          "rounded border border-terminal-border px-1 py-0.5 text-center text-[10px] uppercase tracking-wider",
+                          p.category
+                            ? CATEGORY_COLOR[p.category] ?? "text-terminal-text"
+                            : "text-terminal-dim",
+                        )}
+                      >
+                        {p.category ?? "—"}
+                      </span>
+                      <span className="numeric text-right text-terminal-dim">
+                        {p.avg_cost.toFixed(4)}→{p.last_mark.toFixed(4)}
+                      </span>
+                      <span
+                        className={cn(
+                          "numeric text-right",
+                          p.unrealized_pnl >= 0 ? "text-terminal-green" : "text-terminal-red",
+                        )}
+                      >
+                        {formatUsd(p.unrealized_pnl, { showSign: true })}
+                      </span>
+                    </li>
+                  );
+                })}
               </ul>
             )}
           </Panel>

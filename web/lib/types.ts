@@ -29,6 +29,11 @@ export interface Position {
   category?: string | null;
   days_to_resolution?: number | null;
   end_date_iso?: string | null;
+  // Market metadata so the row is human-readable.
+  question?: string | null;
+  outcome?: "Yes" | "No" | null;
+  condition_id?: string | null;
+  polymarket_url?: string | null;
 }
 
 export interface Signal {
