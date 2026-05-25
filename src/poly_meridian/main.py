@@ -268,8 +268,19 @@ async def _broker_refresh_loop(
     pipeline: Pipeline,
     broker: AgentStateBroker,
     news_proc: NewsProcessor | None = None,
+    market_cache: dict[str, Any] | None = None,
 ) -> None:
-    """Pulls portfolio + kill-switch state every 5s and pushes to the broker."""
+    """Pulls portfolio + kill-switch state every 5s and pushes to the broker.
+
+    market_cache is needed for position metadata (resolution dates, market
+    questions, Polymarket URLs). Without it, the new resolution-aware
+    columns silently regress to None — and the bare-except wrapping the
+    refresh loop body would mask the NameError forever, leaving the
+    snapshot's matcher_mode / scorer_kind / position-meta fields blank.
+    """
+    if market_cache is None:
+        market_cache = {"markets": []}
+    log = structlog.get_logger("poly_meridian.main.broker_refresh")
     # Lazy-import counter refs — they live in different modules.
     from poly_meridian.pipeline import (
         PM_ORDER_SUBMITTED,
@@ -452,8 +463,16 @@ async def _broker_refresh_loop(
             # Push full snapshot so the UI's SSE subscriber refreshes ticks /
             # markets / NAV / counters every 5s without re-fetching REST.
             broker.emit_snapshot()
-        except Exception:
-            pass
+        except Exception as exc:
+            # Was a silent `except: pass` — that mask is exactly how the
+            # market_cache NameError bug stayed hidden across deploys.
+            # Log the type + message so future regressions surface in
+            # Railway logs immediately.
+            log.warning(
+                "broker_refresh.cycle_error",
+                error_type=type(exc).__name__,
+                error=str(exc)[:200],
+            )
         try:
             await asyncio.wait_for(stop.wait(), timeout=5.0)
             return
@@ -1397,7 +1416,10 @@ async def run() -> None:
             _pipeline_loop(stop_event, pipeline, market_cache, log), name="pipeline"
         ),
         asyncio.create_task(
-            _broker_refresh_loop(stop_event, pipeline, broker, news_proc), name="broker_refresh"
+            _broker_refresh_loop(
+                stop_event, pipeline, broker, news_proc, market_cache,
+            ),
+            name="broker_refresh",
         ),
     ]
     if news_proc is not None and db_ok:
