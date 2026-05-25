@@ -189,6 +189,10 @@ class SmartMoneyStrategy(BaseStrategy):
             "net_usd_total": net_usd_total,
             "best_ask": float(price),
             "our_p": our_p,
+            # Phase N.1: long-side Kelly inputs — our_p / market_p are already
+            # on the LONG side (since direction picks the token we're buying).
+            "our_p_long": our_p,
+            "market_p_long": market_p,
             "max_size_pct": max_size_pct,
             "copied_from": attribution,
             "latency_decay_sec": self.latency_decay_sec,
@@ -288,7 +292,19 @@ class SmartMoneyStrategy(BaseStrategy):
         max_size_pct: float,
     ) -> float:
         cluster_max = float(rationale.get("max_size_pct", max_size_pct))
-        # Scale linearly with cluster size, bounded by tier max + aggregator max.
+        # Phase N.1: Kelly on the long side, capped by tier-specific max.
+        our_p = rationale.get("our_p_long")
+        mkt_p = rationale.get("market_p_long")
+        if our_p is not None and mkt_p is not None:
+            from poly_meridian.risk.kelly import sized_kelly
+            effective_cap = min(max_size_pct, cluster_max)
+            kr = sized_kelly(
+                p=float(our_p), market_price=float(mkt_p),
+                bankroll_usd=bankroll_usd,
+                kelly_fraction_multiplier=0.25, hard_cap_pct=effective_cap,
+            )
+            return kr.f_used
+        # Legacy fallback: linear scale with cluster size.
         cluster_size = int(rationale.get("cluster_size", 0))
         scaled = cluster_max * cluster_size / 5
         return float(min(max_size_pct, cluster_max, scaled))

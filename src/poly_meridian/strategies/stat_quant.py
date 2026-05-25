@@ -135,6 +135,10 @@ class StatQuantStrategy(BaseStrategy):
         conviction = min(1.0, abs(z) / (self.mr_zscore_threshold * 2))
         # Edge estimate: half the z-score normalized.
         edge = min(0.20, abs(z) * 0.05)
+        # Kelly inputs on the long side (Phase N.1). our_p_long ≈ market_p ±
+        # edge depending on direction.
+        market_p_long = float(price)
+        our_p_long = max(0.01, min(0.99, market_p_long + edge))
 
         return StrategySignal(
             ts=datetime.now(UTC),
@@ -145,7 +149,8 @@ class StatQuantStrategy(BaseStrategy):
             conviction=conviction,
             suggested_action=action,
             rationale={"sub": "mean_reversion", "zscore": z, "best_ask": float(price),
-                       "max_size_pct": self.mr_max_size_pct},
+                       "max_size_pct": self.mr_max_size_pct,
+                       "our_p_long": our_p_long, "market_p_long": market_p_long},
         )
 
     def _momentum(self, market: Market, features: Features) -> StrategySignal | None:
@@ -171,6 +176,8 @@ class StatQuantStrategy(BaseStrategy):
 
         conviction = min(1.0, abs(ret) / (self.mo_return_threshold * 4))
         edge = min(0.15, abs(ret) * 1.0)
+        market_p_long = float(price)
+        our_p_long = max(0.01, min(0.99, market_p_long + edge))
         return StrategySignal(
             ts=datetime.now(UTC),
             strategy=f"{self.name}.momentum",
@@ -180,7 +187,8 @@ class StatQuantStrategy(BaseStrategy):
             conviction=conviction,
             suggested_action=action,
             rationale={"sub": "momentum", "return": ret, "best_ask": float(price),
-                       "max_size_pct": self.mo_max_size_pct},
+                       "max_size_pct": self.mo_max_size_pct,
+                       "our_p_long": our_p_long, "market_p_long": market_p_long},
         )
 
     def _vol_breakout(self, market: Market, features: Features) -> StrategySignal | None:
@@ -214,6 +222,8 @@ class StatQuantStrategy(BaseStrategy):
         price, _ = best_ask
         conviction = min(1.0, recent_vol / (prior_vol * self.vb_breakout_multiplier))
         edge = min(0.10, abs(ret))
+        market_p_long = float(price)
+        our_p_long = max(0.01, min(0.99, market_p_long + edge))
 
         return StrategySignal(
             ts=datetime.now(UTC),
@@ -224,7 +234,8 @@ class StatQuantStrategy(BaseStrategy):
             conviction=conviction,
             suggested_action=action,
             rationale={"sub": "vol_breakout", "prior_vol": prior_vol, "recent_vol": recent_vol,
-                       "best_ask": float(price), "max_size_pct": self.vb_max_size_pct},
+                       "best_ask": float(price), "max_size_pct": self.vb_max_size_pct,
+                       "our_p_long": our_p_long, "market_p_long": market_p_long},
         )
 
     def _time_decay(self, market: Market, features: Features) -> StrategySignal | None:
@@ -268,6 +279,11 @@ class StatQuantStrategy(BaseStrategy):
         conviction = min(1.0, 0.4 + 0.6 * closeness)
         deviation = abs(yes_p - 0.5)
         edge = min(0.20, deviation * edge_dir)
+        # Long-side Kelly inputs: the side we're BUYING. For BUY_YES,
+        # market_p_long = best_ask on yes_token. our_p_long shifts toward 1.0
+        # (we expect resolution to confirm the favorite).
+        market_p_long = float(price)
+        our_p_long = max(0.01, min(0.99, market_p_long + edge))
 
         return StrategySignal(
             ts=datetime.now(UTC),
@@ -278,7 +294,8 @@ class StatQuantStrategy(BaseStrategy):
             conviction=conviction,
             suggested_action=action,
             rationale={"sub": "time_decay", "hours_to_resolution": hours, "yes_p": yes_p,
-                       "best_ask": float(price), "max_size_pct": self.td_max_size_pct},
+                       "best_ask": float(price), "max_size_pct": self.td_max_size_pct,
+                       "our_p_long": our_p_long, "market_p_long": market_p_long},
         )
 
     # ---------------- aggregator helpers ----------------
@@ -295,4 +312,16 @@ class StatQuantStrategy(BaseStrategy):
     ) -> float:
         # Each sub-signal carries its own cap via `max_size_pct` in rationale.
         sub_cap = float(rationale.get("max_size_pct", max_size_pct))
+        # Phase N.1: Kelly sizing on long-side prob (set by each sub-signal).
+        our_p = rationale.get("our_p_long")
+        mkt_p = rationale.get("market_p_long")
+        if our_p is not None and mkt_p is not None:
+            from poly_meridian.risk.kelly import sized_kelly
+            effective_cap = min(max_size_pct, sub_cap)
+            kr = sized_kelly(
+                p=float(our_p), market_price=float(mkt_p),
+                bankroll_usd=bankroll_usd,
+                kelly_fraction_multiplier=0.25, hard_cap_pct=effective_cap,
+            )
+            return kr.f_used
         return float(min(max_size_pct, sub_cap))

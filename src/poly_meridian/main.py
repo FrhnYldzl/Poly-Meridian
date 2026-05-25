@@ -43,6 +43,7 @@ from poly_meridian.ingestion.normalize import (
 from poly_meridian.observability.logging_config import configure_logging
 from poly_meridian.pipeline import Pipeline
 from poly_meridian.portfolio import Ledger, snapshot
+from poly_meridian.portfolio.pnl import nav_usd as nav_usd_helper
 from poly_meridian.risk import DefaultRiskPolicy, RiskLimits
 from poly_meridian.risk.trade_metrics import compute_trade_metrics
 from poly_meridian.sentiment import (
@@ -301,7 +302,9 @@ async def _broker_refresh_loop(
 
     while not stop.is_set():
         try:
-            snap = snapshot(pipeline.ledger)
+            # Phase N.5: pass day_start_nav for accurate daily_pnl_pct.
+            day_start = getattr(pipeline, "day_start_nav", None)
+            snap = snapshot(pipeline.ledger, day_start_nav=day_start)
             # Build a fast lookup: token_id -> most-recent BUY entry in the
             # ledger. This recovers strategy attribution for positions that
             # were opened before broker.push_order was wired (Phase B.1) —
@@ -830,38 +833,36 @@ async def _portfolio_persist_loop(
                     log.debug("persist.position_failed", error=str(exc)[:120])
 
             # Daily P&L summary — write once per UTC day. Idempotent ON CONFLICT
-            # so the within-day refreshes update the same row.
+            # so the within-day refreshes update the same row. Uses N.3/N.6-corrected
+            # daily_roll_up (real win_count by avg_cost comparison + fees-aware
+            # realized PnL on each position via Ledger.apply_fill).
+            from poly_meridian.portfolio.pnl import daily_roll_up
             now = datetime.now(UTC)
             today = now.date()
-            snap = snapshot(pipeline.ledger)
-            ledger_entries = pipeline.ledger.entries()
-            today_entries = [
-                e for e in ledger_entries
-                if hasattr(e.ts, "date") and e.ts.date() == today
-            ]
-            realized = sum(
-                (e.notional for e in today_entries if e.qty < 0), Decimal(0)
-            )
-            fees = sum((e.fee for e in today_entries), Decimal(0))
-            trade_count = len(today_entries)
-            win_count = sum(
-                1 for e in today_entries
-                if e.qty < 0 and (e.notional - e.fee) > 0
-            )
+            # Phase N.5: rotate start-of-day NAV at UTC midnight. The pipeline
+            # carries a `day_start_nav` attr; we snapshot it on first persist
+            # of a new day and pass to snapshot() so daily_pnl_pct is correct.
+            current_nav = Decimal(str(nav_usd_helper(pipeline.ledger)))
+            if last_pnl_date != today:
+                pipeline.day_start_nav = current_nav  # type: ignore[attr-defined]
+            day_start = getattr(pipeline, "day_start_nav", current_nav)
+            snap = snapshot(pipeline.ledger, day_start_nav=day_start)
+            roll = daily_roll_up(pipeline.ledger, today)
             try:
                 await upsert_pnl_daily(
                     db,
                     date=now,
-                    starting_nav=pipeline.ledger.starting_cash,
-                    ending_nav=Decimal(str(snap.nav_usd)),
-                    realized=realized,
-                    unrealized=Decimal(str(snap.nav_usd)) - pipeline.ledger.starting_cash - realized,
-                    fees=fees,
-                    trade_count=trade_count,
-                    win_count=win_count,
+                    starting_nav=Decimal(str(roll["starting_nav"])),
+                    ending_nav=Decimal(str(roll["ending_nav"])),
+                    realized=Decimal(str(roll["realized"])),
+                    unrealized=Decimal(str(roll["unrealized"])),
+                    fees=Decimal(str(roll["fees"])),
+                    trade_count=int(roll["trade_count"]),
+                    win_count=int(roll["win_count"]),
                 )
                 if last_pnl_date != today:
-                    log.info("persist.pnl_daily_started", date=str(today))
+                    log.info("persist.pnl_daily_started", date=str(today),
+                             day_start_nav=str(day_start))
                     last_pnl_date = today
             except Exception as exc:
                 log.debug("persist.pnl_daily_failed", error=str(exc)[:120])

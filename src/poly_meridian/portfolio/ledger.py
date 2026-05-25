@@ -38,6 +38,10 @@ class PositionState:
     realized_pnl: Decimal = Decimal(0)
     last_mark: Decimal = Decimal(0)
     last_updated: datetime = field(default_factory=lambda: datetime.now(UTC))
+    # Phase N.6: cumulative fees paid on the buy side of this position.
+    # Used to net realized P&L correctly on the sell side. Without this,
+    # `realized_pnl` was gross-of-fees, inflating Sharpe ~2× per fee level.
+    fees_paid: Decimal = Decimal(0)
 
     def unrealized_pnl(self) -> Decimal:
         return self.qty * (self.last_mark - self.avg_cost)
@@ -92,11 +96,23 @@ class Ledger:
                     (pos.qty * pos.avg_cost + signed_qty * fill_price) / new_qty
                 ).quantize(Decimal("0.0001"))
             pos.qty = new_qty
+            # Track buy-side fees so the SELL leg can net them out (Phase N.6).
+            pos.fees_paid += fee
         else:  # SELL — reduce position, realize PnL
             signed_qty = -filled_qty
             notional = (filled_qty * fill_price) - fee    # cash in
-            realized_per_unit = fill_price - pos.avg_cost
-            pos.realized_pnl += realized_per_unit * filled_qty
+            # Realized P&L NET of fees on both legs:
+            #   gross = (sell_price - avg_cost) × qty
+            #   buy_fee_share = fees_paid × (qty_sold / qty_held_before_sell)
+            #   net = gross - buy_fee_share - this_sell_fee
+            gross_per_unit = fill_price - pos.avg_cost
+            buy_fee_share = (
+                pos.fees_paid * filled_qty / pos.qty if pos.qty > 0 else Decimal(0)
+            )
+            realized_net = gross_per_unit * filled_qty - buy_fee_share - fee
+            pos.realized_pnl += realized_net
+            # Reduce the carried buy-fee pool by the share we just attributed.
+            pos.fees_paid = max(Decimal(0), pos.fees_paid - buy_fee_share)
             pos.qty += signed_qty
 
         pos.last_mark = fill_price

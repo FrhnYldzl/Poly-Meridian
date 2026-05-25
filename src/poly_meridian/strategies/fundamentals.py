@@ -159,6 +159,15 @@ class FundamentalsStrategy(BaseStrategy):
         price, _ = best_ask
         conviction = min(1.0, abs(edge) * 2.0 * est.confidence)
 
+        # Canonical Kelly inputs on the long side (Phase N.1).
+        # For BUY_YES: our_p_long = our_p_yes, market_p_long = market_p_yes.
+        # For BUY_NO:  our_p_long = 1 - our_p_yes, market_p_long = 1 - market_p_yes.
+        if edge > 0:
+            our_p_long = est.p_yes
+            market_p_long = market_p
+        else:
+            our_p_long = 1.0 - est.p_yes
+            market_p_long = 1.0 - market_p
         rationale: dict[str, Any] = {
             "category": category,
             "our_p_yes": est.p_yes,
@@ -166,6 +175,8 @@ class FundamentalsStrategy(BaseStrategy):
             "resolver_confidence": est.confidence,
             "best_ask": float(price),
             "max_size_pct": self.max_size_pct,
+            "our_p_long": our_p_long,
+            "market_p_long": market_p_long,
             **est.rationale,
         }
         return StrategySignal(
@@ -194,4 +205,19 @@ class FundamentalsStrategy(BaseStrategy):
     ) -> float:
         cap = float(rationale.get("max_size_pct", max_size_pct))
         confidence = float(rationale.get("resolver_confidence", 0.5))
+        # Phase N.1: Kelly on the long-side probability, scaled by resolver
+        # confidence so a 0.5-confidence estimate gets half the Kelly.
+        our_p = rationale.get("our_p_long")
+        mkt_p = rationale.get("market_p_long")
+        if our_p is not None and mkt_p is not None:
+            from poly_meridian.risk.kelly import sized_kelly
+            effective_cap = min(max_size_pct, cap)
+            kr = sized_kelly(
+                p=float(our_p), market_price=float(mkt_p),
+                bankroll_usd=bankroll_usd,
+                # Confidence × 0.25 — uncertain resolvers size smaller.
+                kelly_fraction_multiplier=0.25 * confidence,
+                hard_cap_pct=effective_cap,
+            )
+            return kr.f_used
         return float(min(max_size_pct, cap * confidence))

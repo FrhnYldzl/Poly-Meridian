@@ -88,12 +88,18 @@ class SentimentStrategy(BaseStrategy):
         if best_ask is None:
             return None
         price, _ = best_ask
-        market_p = float(price)
-        # Our probability estimate from sentiment alone: shift market by
-        # impact-weighted sentiment, bounded.
-        shift = 0.5 * conviction * agg.sentiment_avg
-        our_p = max(0.01, min(0.99, market_p + shift))
-        edge = our_p - market_p
+        # `market_p_long` is the price of the SIDE WE'RE BUYING (YES if
+        # winning_direction=YES, NO if =NO). Likewise `our_p_long` is OUR
+        # probability that THAT side resolves true.
+        market_p_long = float(price)
+        # BUG #8 fix: previously `our_p` was computed for the YES side only
+        # (market_p + shift), and the edge check `our_p - market_p > 0`
+        # silently rejected every BUY_NO candidate (negative sentiment →
+        # negative shift → edge < 0). Compute our_p relative to the LONG
+        # side so both directions actually fire.
+        shift_long = 0.5 * conviction * abs(agg.sentiment_avg)
+        our_p_long = max(0.01, min(0.99, market_p_long + shift_long))
+        edge = our_p_long - market_p_long
         if edge <= 0:
             return None
 
@@ -104,7 +110,9 @@ class SentimentStrategy(BaseStrategy):
             "impact_max": agg.impact_max,
             "winning_direction": agg.winning_direction,
             "best_ask": float(price),
-            "our_p": our_p,
+            # Canonical Kelly inputs — long_side probability + price (Phase N.1).
+            "our_p_long": our_p_long,
+            "market_p_long": market_p_long,
         }
 
         return StrategySignal(
@@ -132,5 +140,17 @@ class SentimentStrategy(BaseStrategy):
         bankroll_usd: Decimal,
         max_size_pct: float,
     ) -> float:
+        # Phase N.1: Kelly sizing on the long side. Fall back to legacy
+        # impact-scaled cap when Kelly inputs missing.
+        our_p = rationale.get("our_p_long")
+        mkt_p = rationale.get("market_p_long")
+        if our_p is not None and mkt_p is not None:
+            from poly_meridian.risk.kelly import sized_kelly
+            kr = sized_kelly(
+                p=float(our_p), market_price=float(mkt_p),
+                bankroll_usd=bankroll_usd,
+                kelly_fraction_multiplier=0.25, hard_cap_pct=max_size_pct,
+            )
+            return kr.f_used
         impact = float(rationale.get("impact_max", 0.0))
         return float(min(max_size_pct, max_size_pct * impact))

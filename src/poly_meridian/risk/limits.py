@@ -33,8 +33,14 @@ class RiskLimits:
 
 
 def check_market_liquidity(signal: AggregatedSignal, limits: RiskLimits) -> str | None:
+    # Phase N.2 — FAIL CLOSED on unknown liquidity. Previously this returned
+    # None ("trust signal"), but in production the aggregator almost always
+    # passes market_liquidity_usd=None, so the liquidity gate was fully
+    # bypassed for hours of trading. If we don't know liquidity, we don't
+    # trade — operator can flip min_market_liquidity_usd to 0 if they
+    # want to disable the check explicitly.
     if signal.market_liquidity_usd is None:
-        return None  # unknown → trust signal, will be re-checked by executor
+        return "liquidity_unknown"
     if signal.market_liquidity_usd < limits.min_market_liquidity_usd:
         return f"liquidity_below_min:{signal.market_liquidity_usd:.0f}<{limits.min_market_liquidity_usd:.0f}"
     return None
