@@ -53,20 +53,68 @@ class PromotionReport:
         return "\n".join(lines) + "\n"
 
 
-# Markers operators flip by running the relevant drill — kept as flag files
-# under .promotion_flags/. CLI command writes them; gate checks read them.
+# Drill evidence files — JSON, with timestamp + structured evidence so the
+# gate can verify both that the drill ran AND that it passed AND that it
+# was recent. Touching a `*.ok` file no longer suffices; the drill script
+# must produce real evidence (row counts, kill-switch state changes, etc).
 FLAG_DIR = Path(".promotion_flags")
+DRILL_VALIDITY_DAYS = 7   # drills older than this don't count
 
 
-def mark_drill(name: str) -> Path:
+def mark_drill(name: str, *, passed: bool = True, evidence: dict | None = None) -> Path:
+    """Write a JSON evidence file for a drill run. `evidence` carries
+    operation-specific artifacts (row counts, HTTP responses, etc) that the
+    promotion gate logs for the audit trail."""
+    import json as _json
     FLAG_DIR.mkdir(parents=True, exist_ok=True)
-    flag = FLAG_DIR / f"{name}.ok"
-    flag.write_text(datetime.now(UTC).isoformat(), encoding="utf-8")
+    flag = FLAG_DIR / f"{name}.json"
+    payload = {
+        "name": name,
+        "ts": datetime.now(UTC).isoformat(),
+        "passed": bool(passed),
+        "evidence": evidence or {},
+    }
+    flag.write_text(_json.dumps(payload, indent=2, default=str), encoding="utf-8")
     return flag
 
 
 def drill_done(name: str) -> bool:
-    return (FLAG_DIR / f"{name}.ok").exists()
+    """True iff the named drill has a valid (passed + recent) evidence file."""
+    import json as _json
+    flag = FLAG_DIR / f"{name}.json"
+    if not flag.exists():
+        # Backwards-compat: tolerate the legacy `.ok` file but only if it's
+        # recent. Operator should migrate by re-running the new drill.
+        legacy = FLAG_DIR / f"{name}.ok"
+        if legacy.exists():
+            mtime = datetime.fromtimestamp(legacy.stat().st_mtime, tz=UTC)
+            age = (datetime.now(UTC) - mtime).days
+            return age < DRILL_VALIDITY_DAYS
+        return False
+    try:
+        data = _json.loads(flag.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    if not data.get("passed"):
+        return False
+    try:
+        ts = datetime.fromisoformat(str(data.get("ts", "")).replace("Z", "+00:00"))
+    except Exception:
+        return False
+    age = datetime.now(UTC) - ts
+    return age < timedelta(days=DRILL_VALIDITY_DAYS)
+
+
+def drill_evidence(name: str) -> dict | None:
+    """Read a drill's evidence payload (for the promotion gate audit log)."""
+    import json as _json
+    flag = FLAG_DIR / f"{name}.json"
+    if not flag.exists():
+        return None
+    try:
+        return _json.loads(flag.read_text(encoding="utf-8"))
+    except Exception:
+        return None
 
 
 async def check_paper_history_age(db: Database, *, min_days: int = 30) -> CheckResult:
