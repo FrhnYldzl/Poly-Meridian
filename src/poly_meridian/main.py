@@ -28,6 +28,7 @@ from prometheus_client import Counter, Gauge, start_http_server
 from poly_meridian.alerts import post_slack_alert, slack_alert_async
 from poly_meridian.api import AgentStateBroker, build_app
 from poly_meridian.execution import PaperExecutor
+from poly_meridian.execution.exit_monitor import ExitMonitor
 from poly_meridian.execution.slippage_monitor import SlippageMonitor
 from poly_meridian.ingestion import GammaClient, GdeltNewsSource
 from poly_meridian.ingestion.book import LocalBook
@@ -1443,6 +1444,23 @@ async def run() -> None:
         asyncio.create_task(
             _smart_money_feed_loop(stop_event, pipeline, log),
             name="smart_money_feed",
+        )
+    )
+
+    # Phase N.3 — ExitMonitor. Scans positions every 10s, emits SELL on
+    # profit-take (+20%), stop-loss (-30%), or time-decay (<6h to resolution).
+    # Routes via executor directly so kill-switch flatten (L.1) still applies.
+    exit_monitor = ExitMonitor(
+        ledger=pipeline.ledger,
+        executor=pipeline.executor,
+        broker=broker,
+        market_cache=market_cache,
+        kill_switch=pipeline.risk.kill_switch,
+    )
+    pipeline.exit_monitor = exit_monitor  # type: ignore[attr-defined]
+    tasks.append(
+        asyncio.create_task(
+            exit_monitor.run_loop(stop_event), name="exit_monitor",
         )
     )
     # Phase K.2 — CLOB user-channel WS feeds LiveExecutor fill notifications.

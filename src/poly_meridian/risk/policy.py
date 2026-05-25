@@ -113,8 +113,11 @@ class DefaultRiskPolicy(RiskPolicy):
             )
 
         if signal.direction not in (Action.BUY_YES, Action.BUY_NO):
-            # Phase 2: only BUY signals open new positions through this path.
-            # SELL/EXIT/HOLD bypass to a portfolio rebalancer (Phase 4+).
+            # Strategy-emitted SELL signals (Phase N.3 introduces these via
+            # the dedicated ExitMonitor path, which BYPASSES this policy).
+            # Anything that lands here via a strategy is by definition NOT
+            # an exit — it's a strategy emitting a SELL it shouldn't be.
+            # Keep the gate closed for strategies.
             return self._reject(
                 signal, "non_buy_direction", direction=str(signal.direction)
             )
