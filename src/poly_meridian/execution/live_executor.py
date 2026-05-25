@@ -170,6 +170,93 @@ class LiveExecutor(Executor):
                 order.status = OrderStatus.CANCELLED
             return ok
 
+    async def apply_user_ws_event(self, evt: dict[str, object]) -> None:
+        """Consume a user-channel WS event (order or trade) and update local
+        state. Primary fill path in live mode — `reconcile()` is only the
+        fallback for missed events.
+
+        Event shapes Polymarket emits (post-decode):
+          order_update: {orderID, status, size_matched, ...}
+          trade:        {orderID, price, size, fee, ...}
+        We map by venue orderID → our order_id via self._venue_id reverse
+        lookup so the agent's internal Order can be mutated and the on_fill
+        callback fired.
+        """
+        from datetime import UTC, datetime
+        from decimal import Decimal as _D
+
+        payload = evt.get("payload") if isinstance(evt.get("payload"), dict) else evt
+        if not isinstance(payload, dict):
+            return
+        venue_id = (
+            payload.get("orderID")
+            or payload.get("order_id")
+            or payload.get("id")
+        )
+        if not venue_id:
+            return
+        # Reverse-lookup our internal order_id from venue id.
+        our_id = next(
+            (k for k, v in self._venue_id.items() if v == venue_id),
+            None,
+        )
+        if our_id is None:
+            return
+        order = self._orders.get(our_id)
+        if order is None:
+            return
+
+        event_type = (
+            evt.get("type") or evt.get("event_type") or payload.get("event_type")
+        )
+        async with self._lock:
+            if event_type in ("order", "order_update"):
+                status = (payload.get("status") or "").upper()
+                if status in ("LIVE", "PARTIAL", "FILLED", "CANCELLED", "REJECTED"):
+                    try:
+                        order.status = OrderStatus[status]
+                    except KeyError:
+                        pass
+                size_matched = payload.get("size_matched") or payload.get("filledSize")
+                if size_matched is not None:
+                    try:
+                        order.filled_size = _D(str(size_matched))
+                    except Exception:
+                        pass
+                log.info("live.user_ws.order_update", order_id=our_id, status=status)
+
+            elif event_type in ("trade", "trade_update", "fill"):
+                price = payload.get("price")
+                size = payload.get("size") or payload.get("matchedSize")
+                fee = payload.get("fee") or 0
+                if price is None or size is None:
+                    return
+                try:
+                    fill_price = _D(str(price))
+                    filled = _D(str(size))
+                    fee_d = _D(str(fee))
+                except Exception:
+                    return
+                order.avg_fill_price = fill_price
+                order.filled_size = (order.filled_size or _D(0)) + filled
+                order.ts_filled = datetime.now(UTC)
+                order.status = (
+                    OrderStatus.FILLED
+                    if order.filled_size >= order.size
+                    else OrderStatus.PARTIAL
+                )
+                log.info(
+                    "live.user_ws.fill",
+                    order_id=our_id,
+                    price=str(fill_price),
+                    filled=str(filled),
+                )
+                if self._on_fill is not None:
+                    try:
+                        await self._on_fill(order, filled, fill_price, fee_d)
+                    except Exception as exc:
+                        log.warning("live.on_fill_error", order_id=our_id, error=str(exc))
+
     async def reconcile(self) -> None:
         """Pull open orders from the venue, reconcile against local state.
 

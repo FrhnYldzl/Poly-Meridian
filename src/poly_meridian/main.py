@@ -32,6 +32,7 @@ from poly_meridian.execution.slippage_monitor import SlippageMonitor
 from poly_meridian.ingestion import GammaClient, GdeltNewsSource
 from poly_meridian.ingestion.book import LocalBook
 from poly_meridian.ingestion.clob_ws import ClobWebsocketSource
+from poly_meridian.ingestion.clob_user_ws import ClobUserChannel
 from poly_meridian.ingestion.polymarket_trades import PolymarketTradesSource
 from poly_meridian.ingestion.normalize import (
     build_event_category_map,
@@ -628,6 +629,57 @@ async def _news_ingest_loop(
                 PM_NEWS_INGESTED.inc()
             except Exception as exc:
                 log.warning("news.write_error", error=str(exc))
+    finally:
+        await src.stop()
+
+
+async def _live_user_ws_loop(
+    stop: asyncio.Event,
+    pipeline: Pipeline,
+    log: Any,
+) -> None:
+    """Phase K.2 — CLOB user-channel WS plumbed into LiveExecutor.
+
+    Live-mode only. Subscribes to wss://ws-subscriptions-clob.polymarket.com/ws/user
+    with our HMAC-signed API credentials and routes every order_update /
+    trade event into LiveExecutor.apply_user_ws_event(). That's the primary
+    fill notification path — reconcile() polling is just the fallback for
+    missed events.
+
+    No-op when:
+      - settings.mode is paper (LiveExecutor isn't even instantiated)
+      - Polymarket API creds (key/secret/passphrase) are unset
+    """
+    settings = get_settings()
+    if str(settings.mode) not in ("live-conservative", "live-normal"):
+        log.info("user_ws.skipped", reason="paper_mode")
+        return
+
+    executor = getattr(pipeline, "executor", None)
+    if executor is None or not hasattr(executor, "apply_user_ws_event"):
+        log.warning("user_ws.skipped", reason="executor_missing_handler")
+        return
+
+    has_creds = bool(
+        settings.polymarket_api_key.get_secret_value()
+        and settings.polymarket_api_secret.get_secret_value()
+        and settings.polymarket_passphrase.get_secret_value()
+    )
+    if not has_creds:
+        log.warning("user_ws.skipped", reason="api_creds_missing")
+        return
+
+    src = ClobUserChannel()
+    await src.start()
+    log.info("user_ws.attached")
+    try:
+        async for evt in src.events():
+            if stop.is_set():
+                break
+            try:
+                await executor.apply_user_ws_event(evt)
+            except Exception as exc:
+                log.warning("user_ws.apply_failed", error=str(exc)[:120])
     finally:
         await src.stop()
 
@@ -1312,6 +1364,15 @@ async def run() -> None:
         asyncio.create_task(
             _smart_money_feed_loop(stop_event, pipeline, log),
             name="smart_money_feed",
+        )
+    )
+    # Phase K.2 — CLOB user-channel WS feeds LiveExecutor fill notifications.
+    # No-op in paper mode (returns immediately). In live mode without creds
+    # it also no-ops with a clear log.
+    tasks.append(
+        asyncio.create_task(
+            _live_user_ws_loop(stop_event, pipeline, log),
+            name="live_user_ws",
         )
     )
 
