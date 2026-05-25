@@ -66,6 +66,7 @@ from poly_meridian.storage.writers import (
     insert_ledger_entry,
     insert_news_article,
     insert_strategy_signal,
+    insert_trade,
     upsert_markets,
     upsert_order,
     upsert_pnl_daily,
@@ -739,7 +740,36 @@ async def _smart_money_feed_loop(
         log.warning("smart_money_feed.no_cluster_builder")
         return
 
-    src = PolymarketTradesSource(poll_sec=5)
+    # Phase O.1 — persist every public trade to the `trades` table so the
+    # Replayer engine has real history to backtest against. Fire-and-forget;
+    # DB outage warnings logged but never block the feed.
+    def _persist_trade(evt: dict[str, Any]) -> None:
+        async def _go() -> None:
+            try:
+                db = await get_db()
+                ts_val = evt.get("ts")
+                if not isinstance(ts_val, datetime):
+                    return
+                await insert_trade(
+                    db,
+                    ts=ts_val,
+                    token_id=str(evt.get("asset") or ""),
+                    side=str(evt.get("side") or "BUY"),
+                    price=Decimal(str(evt.get("price") or 0)),
+                    size=Decimal(str(evt.get("size_units") or 0)),
+                    maker_address=None,
+                    taker_address=str(evt.get("wallet") or "") or None,
+                    tx_hash=str(evt.get("tx_hash") or "") or None,
+                    is_ours=False,
+                )
+            except Exception as exc:
+                log.debug("persist.trade_failed", error=str(exc)[:120])
+        try:
+            asyncio.create_task(_go())
+        except RuntimeError:
+            pass
+
+    src = PolymarketTradesSource(poll_sec=5, on_trade_persist=_persist_trade)
     await src.start()
 
     # Spawn the cluster builder consumer task — drains src.events() into

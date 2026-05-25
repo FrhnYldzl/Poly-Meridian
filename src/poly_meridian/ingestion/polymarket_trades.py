@@ -65,11 +65,16 @@ class PolymarketTradesSource(IngestionSource):
         timeout_sec: float = 15.0,
         limit: int = DEFAULT_LIMIT,
         seen_cap: int = 20_000,
+        on_trade_persist: Any = None,
     ) -> None:
         self._poll_sec = poll_sec
         self._timeout = timeout_sec
         self._limit = limit
         self._seen_cap = seen_cap
+        # Phase O.1: optional fire-and-forget callback called with each
+        # new trade's payload — used by main.py to insert into the `trades`
+        # table so we accumulate history for real-data backtest.
+        self._on_trade_persist = on_trade_persist
         self._client: httpx.AsyncClient | None = None
         self._queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=20_000)
         self._task: asyncio.Task[None] | None = None
@@ -236,6 +241,12 @@ class PolymarketTradesSource(IngestionSource):
                 "size_usd": size_usd,
                 "tx_hash": tx,
             }
+            # Phase O.1: fire DB persistence hook so history accumulates.
+            if self._on_trade_persist is not None:
+                try:
+                    self._on_trade_persist(evt)
+                except Exception as exc:
+                    log.debug("polymarket_trades.persist_hook_failed", error=str(exc)[:120])
             try:
                 self._queue.put_nowait(evt)
                 fresh += 1

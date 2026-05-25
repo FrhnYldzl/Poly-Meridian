@@ -533,6 +533,57 @@ async def fetch_pnl_per_strategy(
         return [dict(r) for r in rows]
 
 
+async def insert_trade(
+    db: Database,
+    *,
+    ts: datetime,
+    token_id: str,
+    side: str,
+    price: Decimal,
+    size: Decimal,
+    maker_address: str | None,
+    taker_address: str | None,
+    tx_hash: str | None,
+    is_ours: bool = False,
+) -> None:
+    """Persist a single Polymarket public trade. (tx_hash, token_id) is the
+    natural dedupe key. Used by PolymarketTradesSource to accumulate the
+    history needed for real-data backtests (Phase O).
+
+    Schema's `trades` table doesn't have a unique constraint on tx_hash —
+    we rely on the source-side seen-set to dedupe before calling this."""
+    async with db.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO trades (
+                ts, token_id, side, price, size,
+                maker_address, taker_address, tx_hash, is_ours
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+            """,
+            ts, token_id, side, price, size,
+            maker_address, taker_address, tx_hash, is_ours,
+        )
+
+
+async def fetch_trades_for_token(
+    db: Database, *, token_id: str, since: datetime
+) -> list[dict[str, Any]]:
+    """Recent trades for a single token — used by the Replayer to build
+    historical ticks. ts ASC for replay ordering."""
+    async with db.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT ts, side, price::float8 AS price, size::float8 AS size,
+                   maker_address, taker_address, tx_hash
+            FROM trades
+            WHERE token_id = $1 AND ts >= $2
+            ORDER BY ts ASC
+            """,
+            token_id, since,
+        )
+        return [dict(r) for r in rows]
+
+
 async def fetch_pnl_daily(
     db: Database, *, days: int = 30
 ) -> list[dict[str, Any]]:
