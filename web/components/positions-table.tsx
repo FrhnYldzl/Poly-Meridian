@@ -26,10 +26,21 @@ export function PositionsTable({ positions }: PositionsTableProps) {
             <tr>
               <th className="px-3 py-1.5 font-medium">Token</th>
               <th className="px-3 py-1.5 font-medium">Strategy</th>
+              <th
+                className="px-3 py-1.5 text-right font-medium"
+                title="Days until market resolves to $1 or $0. Capital is locked until then."
+              >
+                Resolves
+              </th>
               <th className="px-3 py-1.5 text-right font-medium">Qty</th>
               <th className="px-3 py-1.5 text-right font-medium">Avg cost</th>
               <th className="px-3 py-1.5 text-right font-medium">Mark</th>
-              <th className="px-3 py-1.5 text-right font-medium">P&amp;L</th>
+              <th
+                className="px-3 py-1.5 text-right font-medium"
+                title="Unrealized — liquidation value if you exit NOW. Will recover if thesis holds to resolution."
+              >
+                P&amp;L
+              </th>
               <th className="px-3 py-1.5 text-right font-medium" title="Risk : reward — risking $1 to make ($1−p)/p">R:R</th>
               <th className="px-3 py-1.5 text-right font-medium" title="Max loss if token resolves to $0">Max loss</th>
               <th className="px-3 py-1.5 text-right font-medium" title="Max gain if token resolves to $1">Max gain</th>
@@ -84,6 +95,25 @@ function Row({ p }: { p: Position }) {
         ) : (
           <span className="text-[10px] text-terminal-dim">unknown</span>
         )}
+      </td>
+      <td
+        className={cn(
+          "numeric px-3 py-1.5 text-right",
+          p.days_to_resolution == null
+            ? "text-terminal-dim"
+            : p.days_to_resolution < 2
+              ? "text-terminal-amber"
+              : p.days_to_resolution > 60
+                ? "text-terminal-red"
+                : "text-terminal-text",
+        )}
+        title={p.end_date_iso ?? ""}
+      >
+        {p.days_to_resolution == null
+          ? "—"
+          : p.days_to_resolution < 1
+            ? `${(p.days_to_resolution * 24).toFixed(1)}h`
+            : `${p.days_to_resolution.toFixed(1)}d`}
       </td>
       <td className="numeric px-3 py-1.5 text-right">{formatCompact(p.qty)}</td>
       <td className="numeric px-3 py-1.5 text-right text-terminal-dim">

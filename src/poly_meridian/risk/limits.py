@@ -24,6 +24,12 @@ class RiskLimits:
     max_open_positions: int = 50
     min_market_liquidity_usd: float = 10_000.0
     max_position_pct_of_market_volume: float = 0.05
+    # Time-to-resolution gate. Prediction markets aren't stocks — sitting on
+    # a 3-month-out position locks up capital with high variance and no
+    # compounding. Default skips markets resolving > 45 days out. Set to
+    # None / very large to disable.
+    max_resolution_days: float | None = 45.0
+    min_resolution_days: float | None = 0.5    # don't trade <12h to settlement
 
 
 def check_market_liquidity(signal: AggregatedSignal, limits: RiskLimits) -> str | None:

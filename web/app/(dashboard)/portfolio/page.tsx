@@ -19,6 +19,8 @@ export default function PortfolioPage() {
   const points = useNavHistory(snapshot?.nav_usd);
 
   const nav = snapshot?.nav_usd ?? 0;
+  const liquidationNav = snapshot?.liquidation_nav_usd ?? nav;
+  const thesisNav = snapshot?.thesis_nav_usd ?? nav;
   const cash = snapshot?.cash_usd ?? 0;
   const invested = Math.max(0, nav - cash);
   const dailyPnlPct = snapshot?.daily_pnl_pct ?? 0;
@@ -27,6 +29,7 @@ export default function PortfolioPage() {
   const startingNav =
     snapshot?.mode === "paper" || !snapshot?.mode ? STARTING_NAV_PAPER : nav;
   const totalReturnPct = startingNav > 0 ? (nav - startingNav) / startingNav : 0;
+  const thesisVsLiquidation = liquidationNav > 0 ? (thesisNav - liquidationNav) / liquidationNav : 0;
 
   // Build allocation slices by category. Cash gets its own slice so the
   // donut sums to NAV — total visible at a glance.
@@ -57,14 +60,49 @@ export default function PortfolioPage() {
         title="Portfolio"
         subtitle={`${snapshot?.mode ?? "paper"} · ${positions.length} open positions · NAV trace`}
       />
+      {/* Concept primer — Polymarket positions resolve to $1 or $0 at a
+          fixed date. Liquidation NAV is the instant-exit value (what we'd
+          get if we sold every position now). Thesis NAV is what NAV would
+          be if every position reverts to the price our strategy paid —
+          i.e. if our edge is real and we hold to resolution. */}
+      {positions.length > 0 && Math.abs(thesisVsLiquidation) > 0.005 && (
+        <div className="border-b border-terminal-border bg-terminal-amber/5 px-3 py-1.5 font-mono text-[10px] text-terminal-dim">
+          <span className="text-terminal-amber">ⓘ</span>{" "}
+          <strong className="text-terminal-text">
+            Thesis NAV is {thesisVsLiquidation >= 0 ? "+" : ""}
+            {(thesisVsLiquidation * 100).toFixed(2)}% vs Liquidation
+          </strong>{" "}
+          — open positions are{" "}
+          {thesisVsLiquidation > 0 ? "BELOW" : "ABOVE"} entry prices. If the
+          strategy edge is real and positions hold to resolution, NAV converges
+          to Thesis. Liquidation gap reflects current MTM noise, not a realized
+          loss/gain.
+        </div>
+      )}
       <div className="grid min-h-0 flex-1 grid-cols-1 gap-2 overflow-auto p-2 lg:grid-cols-12">
         {/* Top stat tiles ----------------------------------- */}
-        <div className="grid grid-cols-2 gap-2 lg:col-span-12 lg:grid-cols-4">
+        <div className="grid grid-cols-2 gap-2 lg:col-span-12 lg:grid-cols-5">
           <StatTile
-            label="NAV"
-            value={formatUsd(nav)}
-            sub={`vs ${formatUsd(startingNav)} start`}
+            label="Liquidation NAV"
+            value={formatUsd(liquidationNav)}
+            sub="if exit all now"
             tone="text-terminal-textBright"
+          />
+          <StatTile
+            label="Thesis NAV"
+            value={formatUsd(thesisNav)}
+            sub={
+              positions.length > 0
+                ? `${thesisVsLiquidation >= 0 ? "+" : ""}${(thesisVsLiquidation * 100).toFixed(2)}% vs liq.`
+                : "no open positions"
+            }
+            tone={
+              positions.length === 0
+                ? "text-terminal-dim"
+                : thesisVsLiquidation > 0
+                  ? "text-terminal-green"
+                  : "text-terminal-red"
+            }
           />
           <StatTile
             label="Daily P&L"

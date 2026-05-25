@@ -124,6 +124,22 @@ class Pipeline:
     async def tick(self, market: Market) -> Order | None:
         """One pass through the full pipeline for a single market."""
         now = datetime.now(UTC)
+
+        # Resolution-window gate (Phase I.0). Polymarket positions resolve to
+        # $1 or $0 at end_date_iso — they are NOT continuously-held assets.
+        # Markets resolving >max_resolution_days out lock capital with high
+        # variance; markets <min_resolution_days have only intraday noise
+        # left and adverse selection. Skip both ends here so no strategy
+        # has to know about time semantics.
+        if market.end_date_iso is not None:
+            days_left = (market.end_date_iso - now).total_seconds() / 86_400.0
+            max_d = self.risk.limits.max_resolution_days if hasattr(self.risk, "limits") else None
+            min_d = self.risk.limits.min_resolution_days if hasattr(self.risk, "limits") else None
+            if max_d is not None and days_left > max_d:
+                return None
+            if min_d is not None and days_left < min_d:
+                return None
+
         book = self._books.get(market.yes_token_id)
 
         feats = compute_features(

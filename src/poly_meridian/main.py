@@ -153,6 +153,11 @@ def _pick_markets_for_ws(
 def _load_risk_limits() -> RiskLimits:
     data = _load_yaml("risk.yaml")
     r = (data or {}).get("risk", {})
+
+    def _opt_float(key: str, default: float | None) -> float | None:
+        v = r.get(key, default)
+        return None if v is None else float(v)
+
     return RiskLimits(
         kelly_fraction=float(r.get("kelly_fraction", 0.25)),
         max_position_pct_of_bankroll=float(r.get("max_position_pct_of_bankroll", 0.05)),
@@ -168,6 +173,8 @@ def _load_risk_limits() -> RiskLimits:
         max_position_pct_of_market_volume=float(
             r.get("max_position_pct_of_market_volume", 0.05)
         ),
+        max_resolution_days=_opt_float("max_resolution_days", 45.0),
+        min_resolution_days=_opt_float("min_resolution_days", 0.5),
     )
 
 
@@ -300,24 +307,55 @@ async def _broker_refresh_loop(
             # we don't have the strategy's original edge handy here.
             open_positions_out: list[dict[str, Any]] = []
             tok_to_cat = getattr(pipeline, "token_to_category", {}) or {}
+            # Pull resolution dates from the market cache so we can attach
+            # days_to_resolution + compute thesis-NAV. Cache keyed by token_id.
+            tok_to_end: dict[str, datetime] = {}
+            for raw_m in market_cache.get("markets", []) or []:
+                m_obj = gamma_market_to_domain(raw_m)
+                if m_obj is not None and m_obj.end_date_iso is not None:
+                    tok_to_end[m_obj.yes_token_id] = m_obj.end_date_iso
+                    tok_to_end[m_obj.no_token_id] = m_obj.end_date_iso
+            now_ts = datetime.now(UTC)
+            thesis_position_value = 0.0     # sum(qty * avg_cost) — if positions revert to entry
+            liquidation_position_value = 0.0  # sum(qty * last_mark) — current MTM
             for p in pipeline.ledger.positions():
                 tm = compute_trade_metrics(
                     entry_price=float(p.avg_cost) if p.avg_cost else None,
                     size_units=abs(float(p.qty)),
                     edge=0.0,
                 )
+                end_date = tok_to_end.get(p.token_id)
+                days_to_resolution: float | None = None
+                if end_date is not None:
+                    days_to_resolution = max(
+                        0.0, (end_date - now_ts).total_seconds() / 86_400.0
+                    )
+                qty_f = float(p.qty)
+                avg_cost_f = float(p.avg_cost)
+                last_mark_f = float(p.last_mark)
+                unrealized = qty_f * (last_mark_f - avg_cost_f)
+                thesis_position_value += qty_f * avg_cost_f
+                liquidation_position_value += qty_f * last_mark_f
                 open_positions_out.append({
                     "token_id": p.token_id,
-                    "qty": float(p.qty),
-                    "avg_cost": float(p.avg_cost),
-                    "last_mark": float(p.last_mark),
-                    "unrealized_pnl": float(p.qty * (p.last_mark - p.avg_cost)),
+                    "qty": qty_f,
+                    "avg_cost": avg_cost_f,
+                    "last_mark": last_mark_f,
+                    "unrealized_pnl": unrealized,
                     "entry": entry_by_token.get(p.token_id),
                     "trade_metrics": tm.asdict() if tm is not None else None,
-                    # Category from pipeline's token→category map (populated
-                    # by Pipeline.register_market during _pipeline_loop).
                     "category": tok_to_cat.get(p.token_id),
+                    # Resolution context — prediction-market specific.
+                    # Without this the operator can't tell a 1-day swing from
+                    # a 90-day capital lock.
+                    "days_to_resolution": days_to_resolution,
+                    "end_date_iso": end_date.isoformat() if end_date else None,
                 })
+            # thesis NAV = cash + sum(qty * avg_cost). If every open position
+            # eventually MTM'd back to the price we paid (which is where our
+            # strategy thought fair value was), this is the expected NAV.
+            # Liquidation NAV (snap.nav_usd) is what we'd get if we exited now.
+            thesis_nav = float(pipeline.ledger.cash) + thesis_position_value
             broker.update_portfolio(
                 nav_usd=snap.nav_usd,
                 cash_usd=snap.cash_usd,
@@ -325,6 +363,7 @@ async def _broker_refresh_loop(
                 daily_pnl_pct=snap.daily_pnl_pct,
                 total_exposure_pct=snap.total_exposure_pct,
                 open_positions=open_positions_out,
+                thesis_nav_usd=thesis_nav,
             )
             broker.update_kill_switch(
                 engaged=pipeline.risk.is_kill_switch_engaged(),

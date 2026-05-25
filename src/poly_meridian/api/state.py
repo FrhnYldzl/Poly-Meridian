@@ -73,6 +73,14 @@ class Snapshot:
     risk_accepted_total: int = 0
     risk_rejected_total: int = 0
     orders_submitted_total: int = 0
+    # Resolution-aware NAV split (Phase I.0). nav_usd is the *liquidation*
+    # NAV — what we'd have if we exited every position right now at last
+    # mark. thesis_nav_usd is what NAV would be if every open position
+    # reverted to the price we entered at (our model's fair value) — a
+    # rough proxy for "expected NAV if we hold to resolution and our edge
+    # is real". The gap between the two is unrealized noise.
+    liquidation_nav_usd: float = 0.0
+    thesis_nav_usd: float = 0.0
 
     def asdict(self) -> dict[str, Any]:
         return {
@@ -113,6 +121,8 @@ class Snapshot:
             "risk_accepted_total": self.risk_accepted_total,
             "risk_rejected_total": self.risk_rejected_total,
             "orders_submitted_total": self.orders_submitted_total,
+            "liquidation_nav_usd": self.liquidation_nav_usd,
+            "thesis_nav_usd": self.thesis_nav_usd,
         }
 
 
@@ -198,9 +208,14 @@ class AgentStateBroker:
         daily_pnl_pct: float,
         total_exposure_pct: float,
         open_positions: list[dict[str, Any]] | None = None,
+        thesis_nav_usd: float | Decimal | None = None,
     ) -> None:
         self._snapshot.ts = datetime.now(UTC)
         self._snapshot.nav_usd = float(nav_usd)
+        # nav_usd is the liquidation NAV — make it explicit too.
+        self._snapshot.liquidation_nav_usd = float(nav_usd)
+        if thesis_nav_usd is not None:
+            self._snapshot.thesis_nav_usd = float(thesis_nav_usd)
         self._snapshot.cash_usd = float(cash_usd)
         self._snapshot.open_position_count = open_position_count
         self._snapshot.daily_pnl_pct = daily_pnl_pct

@@ -11,6 +11,13 @@ risk:
   max_open_positions: 50
   min_market_liquidity_usd: 10000
   max_position_pct_of_market_volume: 0.05    # market-impact guardrail
+  # Resolution-window gate (Phase I.0). Polymarket positions aren't stocks —
+  # they expire. Don't lock capital on markets resolving >45 days out
+  # (annualized return on a 90-day market is half of the same edge in 45,
+  # and tail variance is huge). Also skip <12h-to-resolution markets where
+  # the only profit left is from intraday noise (high adverse-selection risk).
+  max_resolution_days: 45
+  min_resolution_days: 0.5
 
 kill_switch:
   daily_loss_trigger_pct: 0.05

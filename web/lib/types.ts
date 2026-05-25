@@ -27,6 +27,8 @@ export interface Position {
   entry?: PositionEntry | null;
   trade_metrics?: TradeMetrics | null;
   category?: string | null;
+  days_to_resolution?: number | null;
+  end_date_iso?: string | null;
 }
 
 export interface Signal {
@@ -114,6 +116,11 @@ export interface AgentSnapshot {
   risk_accepted_total?: number;
   risk_rejected_total?: number;
   orders_submitted_total?: number;
+  // Resolution-aware NAV split (Phase I.0).
+  //   liquidation_nav_usd — what we'd get if we exited every position now
+  //   thesis_nav_usd      — what NAV would be if positions revert to entry
+  liquidation_nav_usd?: number;
+  thesis_nav_usd?: number;
 }
 
 export type StreamEvent =
