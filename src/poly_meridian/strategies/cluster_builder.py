@@ -128,11 +128,17 @@ class ClusterStateBuilder:
             async for evt in events:
                 if self._stop.is_set():
                     break
-                if evt.get("type") != "ctf_transfer":
+                etype = evt.get("type")
+                if etype == "ctf_transfer":
+                    self._apply_event(evt)
+                    cid = self._condition_from_event(evt)
+                elif etype == "polymarket_trade":
+                    # data-api /trades feed — already-decoded, doesn't go
+                    # through topic/data parsing. See _apply_polymarket_trade.
+                    cid = self._apply_polymarket_trade(evt)
+                else:
                     continue
-                self._apply_event(evt)
                 # Update strategy with fresh cluster snapshot if available.
-                cid = self._condition_from_event(evt)
                 if cid and self._strategy is not None:
                     cs = self.snapshot_state(cid)
                     if cs is not None:
@@ -148,6 +154,46 @@ class ClusterStateBuilder:
             return None
         mapping = self._token_to_condition.get(token_id)
         return mapping[0] if mapping else None
+
+    def _apply_polymarket_trade(self, evt: dict[str, Any]) -> str | None:
+        """Handle a polymarket_trade event from PolymarketTradesSource.
+
+        These come pre-decoded — wallet, condition_id, direction, side,
+        and size_usd are all directly readable. No topic/data parsing.
+        Only BUY-side trades count toward a cluster (SELLs are exits;
+        the inverse-direction signal is more complex and lives in v1.1
+        exit-pressure logic, not here).
+        """
+        wallet = (evt.get("wallet") or "").lower()
+        condition_id = evt.get("condition_id")
+        direction = (evt.get("direction") or "").upper()
+        side = (evt.get("side") or "").upper()
+        size_usd = float(evt.get("size_usd") or 0)
+        ts = evt.get("ts") or datetime.now(UTC)
+
+        if not wallet or not condition_id or direction not in ("YES", "NO"):
+            return None
+        if side != "BUY":
+            # Exits don't add to a directional cluster; skip for now.
+            return None
+        if size_usd <= 0:
+            return None
+
+        flow = WalletFlow(
+            wallet=wallet,
+            direction=direction,
+            net_usd=size_usd,
+            last_update=ts if isinstance(ts, datetime) else datetime.now(UTC),
+            tier=self._wallet_tier.get(wallet, 3),
+        )
+        self._flows[condition_id].append(flow)
+
+        # Trim to window.
+        cutoff = datetime.now(UTC) - timedelta(seconds=self._window_sec)
+        self._flows[condition_id] = [
+            f for f in self._flows[condition_id] if f.last_update >= cutoff
+        ]
+        return condition_id
 
     def _apply_event(self, evt: dict[str, Any]) -> None:
         wallet = (evt.get("wallet") or "").lower()

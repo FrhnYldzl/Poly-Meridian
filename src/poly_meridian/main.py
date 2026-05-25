@@ -31,6 +31,7 @@ from poly_meridian.execution import PaperExecutor
 from poly_meridian.ingestion import GammaClient, GdeltNewsSource
 from poly_meridian.ingestion.book import LocalBook
 from poly_meridian.ingestion.clob_ws import ClobWebsocketSource
+from poly_meridian.ingestion.polymarket_trades import PolymarketTradesSource
 from poly_meridian.ingestion.normalize import (
     build_event_category_map,
     extract_event_id,
@@ -572,6 +573,99 @@ async def _news_ingest_loop(
             except Exception as exc:
                 log.warning("news.write_error", error=str(exc))
     finally:
+        await src.stop()
+
+
+async def _smart_money_feed_loop(
+    stop: asyncio.Event,
+    pipeline: Pipeline,
+    log: Any,
+) -> None:
+    """Polymarket data-api /trades poller → ClusterStateBuilder.
+
+    Phase I.1: real trade feed for Smart Money. Polls every 5s, dedups by
+    transactionHash, emits polymarket_trade events. ClusterStateBuilder
+    aggregates per-condition flows; SmartMoneyStrategy reads the cluster
+    state when a market evaluates.
+
+    Tier classification: wallets are dynamically classified from their
+    rolling stats (trade_count + total_volume_usd) — Tier 1 / 2 / 3
+    thresholds applied here so the strategy's wallet_tier map updates
+    live as new whales appear.
+    """
+    cb = getattr(pipeline, "cluster_builder", None)
+    if cb is None:
+        log.warning("smart_money_feed.no_cluster_builder")
+        return
+
+    src = PolymarketTradesSource(poll_sec=5)
+    await src.start()
+
+    # Spawn the cluster builder consumer task — drains src.events() into
+    # per-condition flows automatically.
+    await cb.start(src.events())
+
+    # Tier classification thresholds — conservative defaults. Operator can
+    # tune via env / config later. The /trades firehose only has volume +
+    # count (no per-wallet P&L), so tiers are volume-based here.
+    TIER1_MIN_VOLUME = 50_000.0
+    TIER1_MIN_TRADES = 20
+    TIER2_MIN_VOLUME = 10_000.0
+    TIER2_MIN_TRADES = 5
+    REFRESH_SEC = 30
+
+    try:
+        while not stop.is_set():
+            try:
+                stats = src.wallet_stats()
+                strategy = pipeline.smart_money
+                for wallet, s in stats.items():
+                    vol = float(s.get("total_volume_usd", 0))
+                    n = int(s.get("trade_count", 0))
+                    if vol >= TIER1_MIN_VOLUME and n >= TIER1_MIN_TRADES:
+                        tier = 1
+                    elif vol >= TIER2_MIN_VOLUME and n >= TIER2_MIN_TRADES:
+                        tier = 2
+                    else:
+                        tier = 3
+                    cb.register_wallet_tier(wallet, tier)
+                    if strategy is not None:
+                        # SmartMoneyStrategy reads wallet_tier from its own
+                        # map — push there too.
+                        try:
+                            strategy._wallet_tier[wallet] = tier  # type: ignore[reportPrivateUsage]
+                        except Exception:
+                            pass
+                if stats:
+                    n1 = sum(
+                        1 for s in stats.values()
+                        if s.get("total_volume_usd", 0) >= TIER1_MIN_VOLUME
+                        and s.get("trade_count", 0) >= TIER1_MIN_TRADES
+                    )
+                    n2 = sum(
+                        1 for s in stats.values()
+                        if (
+                            TIER2_MIN_VOLUME <= s.get("total_volume_usd", 0) < TIER1_MIN_VOLUME
+                            or s.get("trade_count", 0) < TIER1_MIN_TRADES
+                        )
+                        and s.get("total_volume_usd", 0) >= TIER2_MIN_VOLUME
+                    )
+                    log.debug(
+                        "smart_money_feed.tiers",
+                        total=len(stats),
+                        tier1=n1,
+                        tier2=n2,
+                    )
+            except Exception as exc:
+                log.warning("smart_money_feed.refresh_error", error=str(exc))
+
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=REFRESH_SEC)
+                return
+            except asyncio.TimeoutError:
+                continue
+    finally:
+        await cb.stop()
         await src.stop()
 
 
@@ -1144,6 +1238,14 @@ async def run() -> None:
                 name="portfolio_persist",
             )
         )
+    # Phase I.1 — Smart Money real feed via Polymarket data-api /trades.
+    # Runs independent of DB (events drive cluster_builder in-memory).
+    tasks.append(
+        asyncio.create_task(
+            _smart_money_feed_loop(stop_event, pipeline, log),
+            name="smart_money_feed",
+        )
+    )
 
     log.info(
         "agent.ready",
