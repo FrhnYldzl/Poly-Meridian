@@ -1085,7 +1085,14 @@ def _build_pipeline_and_news_proc() -> tuple[Pipeline, NewsProcessor | None]:
     fundamentals = FundamentalsStrategy(fund_cfg)
 
     aggregator = SignalAggregator(max_size_pct_per_position=limits.max_position_pct_of_bankroll)
-    starting_nav = Decimal("100000") if str(settings.mode) == "paper" else Decimal("500")
+    # Paper bankroll from settings (env var PAPER_STARTING_NAV). Default 100K
+    # matches MASTER_SPEC; operator can override to mirror real deployable
+    # capital (e.g. 250) so paper-track is a realistic dry run instead of a
+    # six-figure fantasy. Live mode keeps the 500 floor.
+    if str(settings.mode) == "paper":
+        starting_nav = Decimal(str(settings.paper_starting_nav))
+    else:
+        starting_nav = Decimal("500")
     ledger = Ledger(starting_cash_usd=starting_nav)
     executor = _build_executor(str(settings.mode))
     # Slippage drift monitor — every fill feeds an observation; main.py runs
@@ -1222,6 +1229,9 @@ async def run() -> None:
         cache_ok=cache_ok,
         sentiment_enabled=news_proc is not None,
     )
+    # Surface genesis NAV so the Portfolio "vs start" tile is correct when
+    # PAPER_STARTING_NAV overrides the default $100K.
+    broker.snapshot.starting_nav_usd = float(pipeline.ledger.starting_cash)
     # Expose broker on pipeline so its hooks can push events.
     pipeline.broker = broker  # type: ignore[attr-defined]
 

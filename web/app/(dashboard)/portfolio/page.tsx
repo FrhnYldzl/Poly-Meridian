@@ -11,7 +11,10 @@ import { useSharedAgentState } from "@/hooks/use-shared-agent-state";
 import { useNavHistory } from "@/hooks/use-nav-history";
 import { cn, formatUsd } from "@/lib/utils";
 
-// Paper starting NAV — matches src/poly_meridian/main.py _build_pipeline_and_news_proc.
+// Default paper starting NAV — operator can override via PAPER_STARTING_NAV
+// env var on the agent. The dashboard derives "vs start" from snapshot's
+// ledger.starting_cash via cash_usd at boot when available; this is just the
+// fallback when no positions have moved yet.
 const STARTING_NAV_PAPER = 100_000;
 
 export default function PortfolioPage() {
@@ -26,8 +29,15 @@ export default function PortfolioPage() {
   const dailyPnlPct = snapshot?.daily_pnl_pct ?? 0;
   const positions = snapshot?.open_positions ?? [];
   const orders = snapshot?.last_orders ?? [];
+  // Prefer the agent-reported starting_nav_usd (set on Ledger init from
+  // PAPER_STARTING_NAV env var); fall back to the spec default only if the
+  // snapshot hasn't published it yet.
   const startingNav =
-    snapshot?.mode === "paper" || !snapshot?.mode ? STARTING_NAV_PAPER : nav;
+    snapshot?.starting_nav_usd && snapshot.starting_nav_usd > 0
+      ? snapshot.starting_nav_usd
+      : snapshot?.mode === "paper" || !snapshot?.mode
+        ? STARTING_NAV_PAPER
+        : nav;
   const totalReturnPct = startingNav > 0 ? (nav - startingNav) / startingNav : 0;
   const thesisVsLiquidation = liquidationNav > 0 ? (thesisNav - liquidationNav) / liquidationNav : 0;
 

@@ -84,6 +84,18 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("PORT", "PROMETHEUS_PORT"),
     )
 
+    # --- Bankroll ---
+    # Paper mode bankroll. Default $100K matches MASTER_SPEC; operator can
+    # override to mirror the real deployable capital so paper-track is a
+    # realistic dry-run (e.g. PAPER_STARTING_NAV=250 to match a $250 live
+    # pilot). Kelly fractions + risk caps are pct-of-bankroll so they scale
+    # naturally; what changes at small bankroll is absolute trade size,
+    # min-order rejections, and fee impact per trade.
+    paper_starting_nav: float = Field(
+        default=100_000.0,
+        validation_alias=AliasChoices("PAPER_STARTING_NAV", "PAPER_BANKROLL"),
+    )
+
     @property
     def is_live(self) -> bool:
         return self.mode in (Mode.LIVE_CONSERVATIVE, Mode.LIVE_NORMAL)

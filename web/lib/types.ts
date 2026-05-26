@@ -126,6 +126,9 @@ export interface AgentSnapshot {
   //   thesis_nav_usd      — what NAV would be if positions revert to entry
   liquidation_nav_usd?: number;
   thesis_nav_usd?: number;
+  // Genesis NAV — Ledger.starting_cash, surfaced so "vs start" math works
+  // when PAPER_STARTING_NAV overrides the $100K default.
+  starting_nav_usd?: number;
 }
 
 export type StreamEvent =
