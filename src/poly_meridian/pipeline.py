@@ -118,6 +118,16 @@ class Pipeline:
         self.arbitrage.register_pair(
             market.condition_id, market.yes_token_id, market.no_token_id
         )
+        # Phase Q.3 — feed the risk policy's concentration map so it can
+        # map a portfolio position's token_id back to its condition + event
+        # and block self-hedge / same-event piling.
+        if hasattr(self.risk, "register_market"):
+            self.risk.register_market(
+                condition_id=market.condition_id,
+                yes_token=market.yes_token_id,
+                no_token=market.no_token_id,
+                event_id=market.event_id,
+            )
         if market.category:
             self.token_to_category[market.yes_token_id] = market.category
             self.token_to_category[market.no_token_id] = market.category

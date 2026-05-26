@@ -36,6 +36,8 @@ from poly_meridian.risk.limits import (
     check_market_liquidity,
     check_open_position_count,
     check_position_size_cap,
+    check_same_condition,
+    check_same_event,
     check_total_exposure,
     reduce_size_if_breached,
 )
@@ -103,6 +105,30 @@ class DefaultRiskPolicy(RiskPolicy):
         self._slippage_drift_bps: float | None = None
         self.drift_alarm_bps = 200.0     # > 200 bps deviation → react
         self.drift_size_multiplier = 0.5  # halve sizing while drift is bad
+        # Phase Q.3 — token → condition_id + token → event_id maps so the
+        # concentration checks can resolve a portfolio position back to
+        # its Polymarket condition / event. Populated by Pipeline as it
+        # learns about markets (register_market on each WS re-sub).
+        self._token_to_condition: dict[str, str] = {}
+        self._token_to_event: dict[str, str] = {}
+        # signal.condition_id → event_id, for the same-event check.
+        self._condition_to_event: dict[str, str] = {}
+
+    def register_market(
+        self,
+        condition_id: str,
+        yes_token: str,
+        no_token: str,
+        event_id: str | None = None,
+    ) -> None:
+        """Pipeline registers each market it sees so the concentration
+        checks can map a position's token_id back to its condition / event."""
+        self._token_to_condition[yes_token] = condition_id
+        self._token_to_condition[no_token] = condition_id
+        if event_id:
+            self._token_to_event[yes_token] = event_id
+            self._token_to_event[no_token] = event_id
+            self._condition_to_event[condition_id] = event_id
 
     def update_slippage_drift(self, drift_bps: float | None) -> None:
         """Called by main.py's broker_refresh_loop with the latest measured
@@ -142,6 +168,16 @@ class DefaultRiskPolicy(RiskPolicy):
             check_daily_loss(portfolio, self.limits),
             check_open_position_count(portfolio, self.limits),
             check_market_liquidity(signal, self.limits),
+            # Phase Q.3 — block adding to existing position on the same
+            # condition (incl. opposite leg, which would be self-hedge).
+            check_same_condition(
+                signal, portfolio, self.limits, self._token_to_condition,
+            ),
+            # Phase Q.3 — cap positions per parent event (related markets).
+            check_same_event(
+                signal, portfolio, self.limits, self._token_to_event,
+                self._condition_to_event.get(signal.condition_id),
+            ),
         ):
             if reason:
                 return self._reject(signal, reason)

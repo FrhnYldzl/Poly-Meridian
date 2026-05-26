@@ -53,19 +53,27 @@ class StatQuantStrategy(BaseStrategy):
         self.mr_zscore_threshold = float(mr.get("zscore_threshold", 2.0))
         self.mr_min_window = int(mr.get("min_window", 10))
         self.mr_max_size_pct = float(mr.get("max_size_pct", 0.02))
+        # Phase Q.5 — conviction floor. Pre-fix, mean_reversion fired at
+        # conv=0.51 (z just barely past threshold) which after fees is
+        # close to coin-flip EV. Each sub-strategy gets its own floor;
+        # below it the signal is silently rejected.
+        self.mr_min_conviction = float(mr.get("min_conviction", 0.60))
 
         self.mo_lookback = int(mo.get("lookback_window", 20))
         self.mo_return_threshold = float(mo.get("return_threshold", 0.05))
         self.mo_min_volume = float(mo.get("min_volume", 0.0))
         self.mo_max_size_pct = float(mo.get("max_size_pct", 0.02))
+        self.mo_min_conviction = float(mo.get("min_conviction", 0.65))
 
         self.vb_low_vol_threshold = float(vb.get("low_vol_threshold", 0.005))
         self.vb_breakout_multiplier = float(vb.get("breakout_multiplier", 2.0))
         self.vb_max_size_pct = float(vb.get("max_size_pct", 0.02))
+        self.vb_min_conviction = float(vb.get("min_conviction", 0.70))
 
         self.td_horizon_hours_max = float(td.get("horizon_hours_max", 24.0))
         self.td_price_deviation_threshold = float(td.get("price_deviation_threshold", 0.10))
         self.td_max_size_pct = float(td.get("max_size_pct", 0.015))
+        self.td_min_conviction = float(td.get("min_conviction", 0.60))
 
         # Per-token rolling price history. Sized for the largest window we use.
         self._capacity = max(self.mr_min_window, self.mo_lookback, 60)
@@ -138,6 +146,11 @@ class StatQuantStrategy(BaseStrategy):
         price, _ = best_ask
         action = Action.BUY_NO if z > 0 else Action.BUY_YES
         conviction = min(1.0, abs(z) / (self.mr_zscore_threshold * 2))
+        # Phase Q.5 — kill weak-conviction signals before they reach the
+        # aggregator. At conv≈0.51 fees + slippage swallow the edge.
+        if conviction < self.mr_min_conviction:
+            PM_STRATEGY_REJECT.labels(strategy="stat_quant.mean_reversion", reason="conviction_below_floor").inc()
+            return None
         # Edge estimate: half the z-score normalized.
         edge = min(0.20, abs(z) * 0.05)
         # Kelly inputs on the long side (Phase N.1). our_p_long ≈ market_p ±
@@ -186,6 +199,9 @@ class StatQuantStrategy(BaseStrategy):
         price, _ = best_ask
 
         conviction = min(1.0, abs(ret) / (self.mo_return_threshold * 4))
+        if conviction < self.mo_min_conviction:
+            PM_STRATEGY_REJECT.labels(strategy="stat_quant.momentum", reason="conviction_below_floor").inc()
+            return None
         edge = min(0.15, abs(ret) * 1.0)
         market_p_long = float(price)
         our_p_long = max(0.01, min(0.99, market_p_long + edge))
@@ -239,6 +255,9 @@ class StatQuantStrategy(BaseStrategy):
             return None
         price, _ = best_ask
         conviction = min(1.0, recent_vol / (prior_vol * self.vb_breakout_multiplier))
+        if conviction < self.vb_min_conviction:
+            PM_STRATEGY_REJECT.labels(strategy="stat_quant.vol_breakout", reason="conviction_below_floor").inc()
+            return None
         edge = min(0.10, abs(ret))
         market_p_long = float(price)
         our_p_long = max(0.01, min(0.99, market_p_long + edge))
@@ -303,6 +322,9 @@ class StatQuantStrategy(BaseStrategy):
         # Time-decay conviction grows as resolution approaches.
         closeness = 1.0 - (hours / self.td_horizon_hours_max)
         conviction = min(1.0, 0.4 + 0.6 * closeness)
+        if conviction < self.td_min_conviction:
+            PM_STRATEGY_REJECT.labels(strategy="stat_quant.time_decay", reason="conviction_below_floor").inc()
+            return None
         deviation = abs(yes_p - 0.5)
         edge = min(0.20, deviation * edge_dir)
         # Long-side Kelly inputs: the side we're BUYING. For BUY_YES,

@@ -30,6 +30,13 @@ class RiskLimits:
     # None / very large to disable.
     max_resolution_days: float | None = 45.0
     min_resolution_days: float | None = 0.5    # don't trade <12h to settlement
+    # Phase Q.3 — concentration guards. Without these the system happily
+    # buys YES *and* NO on the same condition (self-hedge → guaranteed
+    # net loss after fees) and piles all 4 positions into one event
+    # (single-resolution risk eats whole NAV). Cap per condition (HARD)
+    # and per event (soft).
+    max_positions_per_condition: int = 1   # YES OR NO on a condition, never both
+    max_positions_per_event: int = 2       # related Polymarket markets share event_id
 
 
 def check_market_liquidity(signal: AggregatedSignal, limits: RiskLimits) -> str | None:
@@ -76,6 +83,56 @@ def check_category_exposure(
 def check_open_position_count(portfolio: PortfolioSnapshot, limits: RiskLimits) -> str | None:
     if portfolio.open_position_count >= limits.max_open_positions:
         return f"max_open_positions_reached:{portfolio.open_position_count}>={limits.max_open_positions}"
+    return None
+
+
+def check_same_condition(
+    signal: AggregatedSignal,
+    portfolio: PortfolioSnapshot,
+    limits: RiskLimits,
+    token_to_condition: dict[str, str],
+) -> str | None:
+    """Phase Q.3: block adding to or hedging against an existing position
+    on the same Polymarket condition. The condition has two tokens (YES,
+    NO) that are mutually exclusive at resolution — owning both is
+    equivalent to paying fees for $1 of guaranteed-$1 payoff (net loss).
+    Owning more of the same side is just position topping which we also
+    skip for now (it'd defeat per-position size caps).
+    """
+    same = 0
+    for pos in portfolio.positions:
+        if float(pos.qty) <= 0:
+            continue
+        pos_cond = token_to_condition.get(pos.token_id)
+        if pos_cond and pos_cond == signal.condition_id:
+            same += 1
+    if same >= limits.max_positions_per_condition:
+        return f"same_condition_open:{signal.condition_id[:8]}:{same}>={limits.max_positions_per_condition}"
+    return None
+
+
+def check_same_event(
+    signal: AggregatedSignal,
+    portfolio: PortfolioSnapshot,
+    limits: RiskLimits,
+    token_to_event: dict[str, str],
+    signal_event_id: str | None,
+) -> str | None:
+    """Phase Q.3: limit positions in the same Polymarket event (parent
+    container that groups related condition_ids). Without this the
+    system concentrates all NAV in one event's family of markets and
+    a single underlying resolution drains the account."""
+    if signal_event_id is None:
+        return None
+    same = 0
+    for pos in portfolio.positions:
+        if float(pos.qty) <= 0:
+            continue
+        ev = token_to_event.get(pos.token_id)
+        if ev and ev == signal_event_id:
+            same += 1
+    if same >= limits.max_positions_per_event:
+        return f"same_event_cap:{signal_event_id[:8]}:{same}>={limits.max_positions_per_event}"
     return None
 
 

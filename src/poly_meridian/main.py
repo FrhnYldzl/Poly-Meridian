@@ -479,7 +479,16 @@ async def _broker_refresh_loop(
             broker.update_pipeline_funnel(
                 signals_emitted=_counter_total(PM_SIGNAL_EMITTED),
                 signals_aggregated=_counter_total(PM_SIGNAL_AGGREGATED),
-                risk_accepted=_counter_total_filtered(PM_RISK_DECISION, "decision", "accept"),
+                # Phase Q.4 fix: RiskDecision enum values are "approve" /
+                # "reject" / "reduce" — the previous "accept" substring
+                # never matched anything, so risk_accepted stayed at 0
+                # forever. Treat both APPROVE and REDUCE as "accepted" —
+                # both flow forward into router/executor, only REJECT
+                # blocks the trade.
+                risk_accepted=(
+                    _counter_total_filtered(PM_RISK_DECISION, "decision", "approve")
+                    + _counter_total_filtered(PM_RISK_DECISION, "decision", "reduce")
+                ),
                 risk_rejected=_counter_total_filtered(PM_RISK_DECISION, "decision", "reject"),
                 orders_submitted=_counter_total(PM_ORDER_SUBMITTED),
             )
