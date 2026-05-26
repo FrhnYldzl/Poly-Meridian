@@ -328,46 +328,14 @@ async def _broker_refresh_loop(
             # we don't have the strategy's original edge handy here.
             open_positions_out: list[dict[str, Any]] = []
             tok_to_cat = getattr(pipeline, "token_to_category", {}) or {}
-            # Pull resolution dates AND market metadata (question, slug,
-            # outcome side) from the market cache so positions can render
-            # human-readable rows + a direct Polymarket link instead of
-            # raw token IDs.
-            tok_to_end: dict[str, datetime] = {}
-            tok_to_meta: dict[str, dict[str, Any]] = {}
-            for raw_m in market_cache.get("markets", []) or []:
-                m_obj = gamma_market_to_domain(raw_m)
-                if m_obj is None:
-                    continue
-                if m_obj.end_date_iso is not None:
-                    tok_to_end[m_obj.yes_token_id] = m_obj.end_date_iso
-                    tok_to_end[m_obj.no_token_id] = m_obj.end_date_iso
-                # Gamma's "slug" is the per-market slug; "eventSlug" is the
-                # parent event. Polymarket's market URL routes off the
-                # event slug; fall back to market slug if event is missing.
-                ev_slug = raw_m.get("eventSlug")
-                if not ev_slug:
-                    events_arr = raw_m.get("events")
-                    if isinstance(events_arr, list) and events_arr:
-                        first = events_arr[0]
-                        if isinstance(first, dict):
-                            ev_slug = first.get("slug")
-                market_slug = raw_m.get("slug")
-                question = m_obj.question
-                # YES position vs NO position — which outcome we're long.
-                tok_to_meta[m_obj.yes_token_id] = {
-                    "question": question,
-                    "outcome": "Yes",
-                    "event_slug": ev_slug,
-                    "market_slug": market_slug,
-                    "condition_id": m_obj.condition_id,
-                }
-                tok_to_meta[m_obj.no_token_id] = {
-                    "question": question,
-                    "outcome": "No",
-                    "event_slug": ev_slug,
-                    "market_slug": market_slug,
-                    "condition_id": m_obj.condition_id,
-                }
+            # Token metadata lookups are populated by _gamma_sync_loop (every
+            # 5min) and cached on the pipeline. Reading them every 5s is fine —
+            # iterating 10K markets per 5s on the hot path was causing 50K
+            # Pydantic constructions/sec AND exposing us to silent crashes when
+            # any single market row was malformed (which kills the whole
+            # update_portfolio call). Now bounded.
+            tok_to_end: dict[str, datetime] = getattr(pipeline, "tok_to_end", {}) or {}
+            tok_to_meta: dict[str, dict[str, Any]] = getattr(pipeline, "tok_to_meta", {}) or {}
             now_ts = datetime.now(UTC)
             thesis_position_value = 0.0     # sum(qty * avg_cost) — if positions revert to entry
             liquidation_position_value = 0.0  # sum(qty * last_mark) — current MTM
@@ -513,6 +481,7 @@ async def _gamma_sync_loop(
     log: Any,
     cluster_builder: ClusterStateBuilder | None = None,
     broker: AgentStateBroker | None = None,
+    pipeline: Pipeline | None = None,
 ) -> None:
     while not stop.is_set():
         try:
@@ -564,6 +533,53 @@ async def _gamma_sync_loop(
                     log.warning("gamma_sync.persist_skip", error=str(exc))
                 PM_MARKETS_TOTAL.set(len(rows))
                 market_cache["markets"] = raw
+                # Build token → metadata caches ONCE per gamma cycle (5min)
+                # instead of every broker_refresh tick (5s × 10K markets).
+                # Stored on pipeline so broker_refresh_loop reads in O(1).
+                tok_to_end: dict[str, datetime] = {}
+                tok_to_meta: dict[str, dict[str, Any]] = {}
+                for raw_m in raw:
+                    try:
+                        m_obj = gamma_market_to_domain(raw_m)
+                        if m_obj is None:
+                            continue
+                        if m_obj.end_date_iso is not None:
+                            tok_to_end[m_obj.yes_token_id] = m_obj.end_date_iso
+                            tok_to_end[m_obj.no_token_id] = m_obj.end_date_iso
+                        ev_slug = raw_m.get("eventSlug")
+                        if not ev_slug:
+                            events_arr = raw_m.get("events")
+                            if isinstance(events_arr, list) and events_arr:
+                                first = events_arr[0]
+                                if isinstance(first, dict):
+                                    ev_slug = first.get("slug")
+                        market_slug = raw_m.get("slug")
+                        tok_to_meta[m_obj.yes_token_id] = {
+                            "question": m_obj.question, "outcome": "Yes",
+                            "event_slug": ev_slug, "market_slug": market_slug,
+                            "condition_id": m_obj.condition_id,
+                        }
+                        tok_to_meta[m_obj.no_token_id] = {
+                            "question": m_obj.question, "outcome": "No",
+                            "event_slug": ev_slug, "market_slug": market_slug,
+                            "condition_id": m_obj.condition_id,
+                        }
+                    except Exception as exc:
+                        log.debug(
+                            "gamma_sync.meta_build_row_skip",
+                            error=str(exc)[:100],
+                        )
+                # Stash caches directly on the pipeline so broker_refresh_loop
+                # reads in O(1) instead of re-iterating 10K markets per 5s.
+                if pipeline is not None:
+                    pipeline.tok_to_end = tok_to_end       # type: ignore[attr-defined]
+                    pipeline.tok_to_meta = tok_to_meta     # type: ignore[attr-defined]
+                log.info(
+                    "gamma_sync.meta_caches_built",
+                    n_markets=len(raw),
+                    n_tok_to_end=len(tok_to_end),
+                    n_tok_to_meta=len(tok_to_meta),
+                )
                 # Category breakdown for the operator dashboard. Empty /
                 # uncategorized markets fall into "Other" so totals match.
                 if broker is not None:
@@ -1448,6 +1464,7 @@ async def run() -> None:
                 stop_event, market_cache, news_proc, log,
                 getattr(pipeline, "cluster_builder", None),
                 broker,
+                pipeline,
             ),
             name="gamma_sync",
         ),
