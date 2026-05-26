@@ -8,8 +8,19 @@ COPY web/package.json web/package-lock.json* web/.npmrc* ./
 RUN npm install --legacy-peer-deps
 
 COPY web/ ./
+# Phase P diagnostic: clear any stale Next.js cache so new routes (e.g.
+# /reports added in commit a42a218) actually get exported. Without this
+# clean step, Railway sometimes serves a build where new page.tsx files
+# exist on disk but next build reuses cached compilation state and
+# doesn't emit them.
+RUN rm -rf /web/.next /web/out
 RUN npm run build
 # `next build` with `output: "export"` writes static HTML/JS to /web/out
+# Verify the new route was actually exported. Fail the build loudly
+# rather than silently shipping a deploy where /reports falls back to /.
+RUN test -f /web/out/reports/index.html \
+    || (echo "BUILD FAIL: /reports route was NOT exported" \
+        && ls -la /web/out/ && exit 1)
 
 # ---------- Stage 2: the Python agent + bundled static UI ----------
 FROM python:3.12-slim AS app
