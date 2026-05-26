@@ -443,12 +443,20 @@ async def _broker_refresh_loop(
             )
             # Push full snapshot so the UI's SSE subscriber refreshes ticks /
             # markets / NAV / counters every 5s without re-fetching REST.
+            # Clear last-refresh-error since this cycle succeeded.
+            broker.snapshot.last_refresh_error = None
             broker.emit_snapshot()
         except Exception as exc:
             # Was a silent `except: pass` — that mask is exactly how the
             # market_cache NameError bug stayed hidden across deploys.
             # Log the type + message so future regressions surface in
-            # Railway logs immediately.
+            # Railway logs immediately. ALSO writes the error string onto
+            # broker.snapshot.last_refresh_error so /api/state surfaces it
+            # directly — no Railway log access needed to diagnose.
+            import traceback
+            err_msg = f"{type(exc).__name__}: {str(exc)[:200]}"
+            tb_short = traceback.format_exc().split("\n")[-3:-1]
+            broker.snapshot.last_refresh_error = f"{err_msg} | {' | '.join(tb_short)}"
             log.warning(
                 "broker_refresh.cycle_error",
                 error_type=type(exc).__name__,

@@ -85,6 +85,9 @@ class Snapshot:
     # in paper mode). Surfaced so the Portfolio page's "vs start" tile is
     # right regardless of bankroll override.
     starting_nav_usd: float = 0.0
+    # Diagnostic: last error in broker_refresh_loop, surfaced for debugging
+    # silent failures without Railway log access. Empty when healthy.
+    last_refresh_error: str | None = None
     # Slippage drift monitor (Phase K). None when < 10 fills observed yet.
     slippage_summary: dict[str, Any] = field(default_factory=dict)
 
@@ -130,6 +133,7 @@ class Snapshot:
             "liquidation_nav_usd": self.liquidation_nav_usd,
             "thesis_nav_usd": self.thesis_nav_usd,
             "starting_nav_usd": self.starting_nav_usd,
+            "last_refresh_error": self.last_refresh_error,
             "slippage_summary": self.slippage_summary,
         }
 
