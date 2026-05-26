@@ -223,6 +223,27 @@ def build_app(broker: AgentStateBroker) -> FastAPI:
             "results": results,
         }
 
+    @app.get("/api/ops-reports")
+    async def ops_reports(limit: int = 48) -> dict[str, Any]:
+        """Recent operations reports — Phase P hourly snapshots. Each row
+        carries cumulative counters + per-window deltas + funnel drop-offs +
+        slippage state. /reports page renders these as historical cards."""
+        from poly_meridian.storage import get_db
+        from poly_meridian.storage.writers import fetch_recent_ops_reports
+        try:
+            db = await get_db()
+            rows = await fetch_recent_ops_reports(
+                db, limit=max(1, min(168, int(limit))),
+            )
+        except Exception as exc:
+            return {"error": str(exc)[:200], "rows": []}
+        # Normalize timestamp for JSON.
+        for r in rows:
+            ts = r.get("ts")
+            if hasattr(ts, "isoformat"):
+                r["ts"] = ts.isoformat()
+        return {"limit": int(limit), "rows": rows}
+
     @app.get("/api/strategy-pnl")
     async def strategy_pnl(days: int = 30) -> dict[str, Any]:
         """Per-strategy realized PNL + fill counts + win rate. Aggregated

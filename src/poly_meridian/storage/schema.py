@@ -173,6 +173,18 @@ CREATE TABLE IF NOT EXISTS pnl_daily (
     win_count       INT NOT NULL
 );
 
+-- Operations reports — hourly snapshots of pipeline counters + funnel
+-- drop-offs + NAV + position summary. Lets the operator see "what happened
+-- last hour" as historical data on the /reports page. Payload is JSONB so
+-- new metrics can be added without schema migrations.
+CREATE TABLE IF NOT EXISTS ops_reports (
+    id              BIGSERIAL PRIMARY KEY,
+    ts              TIMESTAMPTZ NOT NULL,
+    window_sec      INT NOT NULL,
+    payload         JSONB NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ops_reports_ts ON ops_reports(ts DESC);
+
 -- Per-fill ledger entries — every BUY/SELL leaves an immutable row here.
 -- Source of truth for per-strategy P&L attribution and the realized leg
 -- of pnl_daily. PRIMARY KEY is (order_id, fill_seq) because a single

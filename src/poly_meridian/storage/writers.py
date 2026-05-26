@@ -533,6 +533,52 @@ async def fetch_pnl_per_strategy(
         return [dict(r) for r in rows]
 
 
+async def insert_ops_report(
+    db: Database,
+    *,
+    ts: datetime,
+    window_sec: int,
+    payload: dict[str, Any],
+) -> None:
+    """Persist an hourly operations report. Phase P — operator-facing
+    historical view of pipeline/trade/news funnels per window."""
+    async with db.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO ops_reports (ts, window_sec, payload)
+            VALUES ($1, $2, $3::jsonb)
+            """,
+            ts, window_sec, json.dumps(payload, default=str),
+        )
+
+
+async def fetch_recent_ops_reports(
+    db: Database, *, limit: int = 24
+) -> list[dict[str, Any]]:
+    """Most-recent N reports (default 24 = last day at hourly cadence)."""
+    async with db.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT id, ts, window_sec, payload
+            FROM ops_reports
+            ORDER BY ts DESC
+            LIMIT $1
+            """,
+            limit,
+        )
+        out: list[dict[str, Any]] = []
+        for r in rows:
+            d = dict(r)
+            # payload may already be parsed dict by asyncpg, else stringified
+            if isinstance(d.get("payload"), str):
+                try:
+                    d["payload"] = json.loads(d["payload"])
+                except Exception:
+                    pass
+            out.append(d)
+        return out
+
+
 async def insert_trade(
     db: Database,
     *,

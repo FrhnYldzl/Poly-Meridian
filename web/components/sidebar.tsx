@@ -7,6 +7,7 @@ import {
   BarChart3,
   Brain,
   ChevronLeft,
+  FileText,
   LayoutGrid,
   LineChart,
   ListOrdered,
@@ -35,6 +36,7 @@ const NAV_ITEMS: NavItem[] = [
   { href: "/smart-money", label: "Smart Money", hotkey: "G W", icon: Wallet },
   { href: "/backtest", label: "Backtest", hotkey: "G B", icon: LineChart },
   { href: "/risk", label: "Risk", hotkey: "G K", icon: Shield },
+  { href: "/reports", label: "Reports", hotkey: "G E", icon: FileText },
   { href: "/logs", label: "Logs", hotkey: "G L", icon: Activity },
   { href: "/settings", label: "Settings", hotkey: "G T", icon: Sliders },
 ];

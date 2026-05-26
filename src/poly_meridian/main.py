@@ -61,10 +61,12 @@ from poly_meridian.storage.writers import (
     fetch_pnl_per_strategy,
     fetch_positions,
     fetch_recent_news_signals,
+    fetch_recent_ops_reports,
     fetch_recent_orders,
     fetch_recent_strategy_signals,
     insert_ledger_entry,
     insert_news_article,
+    insert_ops_report,
     insert_strategy_signal,
     insert_trade,
     upsert_markets,
@@ -864,6 +866,117 @@ async def _smart_money_feed_loop(
         await src.stop()
 
 
+async def _ops_report_loop(
+    stop: asyncio.Event,
+    pipeline: Pipeline,
+    broker: AgentStateBroker,
+    log: Any,
+    interval_sec: int = 3600,
+) -> None:
+    """Phase P — periodic operations report. Snapshots key counters every
+    `interval_sec` and persists to `ops_reports` for the /reports page.
+    Each report carries deltas vs the previous snapshot ("what happened
+    in the last hour") so the operator can read trade-funnel/news-funnel/
+    NAV change at a glance instead of inferring from cumulative counters.
+    """
+    prev: dict[str, Any] | None = None
+    while not stop.is_set():
+        try:
+            snap = broker.snapshot.asdict()
+            now = datetime.now(UTC)
+            cur = {
+                "ts": now.isoformat(),
+                "uptime_sec": snap.get("uptime_sec", 0),
+                "nav_usd": snap.get("liquidation_nav_usd") or snap.get("nav_usd", 0),
+                "thesis_nav_usd": snap.get("thesis_nav_usd", 0),
+                "cash_usd": snap.get("cash_usd", 0),
+                "starting_nav_usd": snap.get("starting_nav_usd", 0),
+                "daily_pnl_pct": snap.get("daily_pnl_pct", 0),
+                "total_exposure_pct": snap.get("total_exposure_pct", 0),
+                "open_position_count": snap.get("open_position_count", 0),
+                # Pipeline activity (cumulative — deltas computed below).
+                "pipeline_ticks_total": snap.get("pipeline_ticks_total", 0),
+                "strategies_evaluated_total": snap.get("strategies_evaluated_total", 0),
+                # Trade funnel (cumulative).
+                "signals_emitted_total": snap.get("signals_emitted_total", 0),
+                "signals_aggregated_total": snap.get("signals_aggregated_total", 0),
+                "risk_accepted_total": snap.get("risk_accepted_total", 0),
+                "risk_rejected_total": snap.get("risk_rejected_total", 0),
+                "orders_submitted_total": snap.get("orders_submitted_total", 0),
+                # News funnel (cumulative).
+                "news_ingested_total": snap.get("news_ingested_total", 0),
+                "news_processed_total": snap.get("news_processed_total", 0),
+                "news_signals_emitted_total": snap.get("news_signals_emitted_total", 0),
+                # Coverage.
+                "markets_active_total": snap.get("markets_active_total", 0),
+                "ws_subscribed_total": snap.get("ws_subscribed_total", 0),
+                "markets_by_category": dict(snap.get("markets_by_category") or {}),
+                # Slippage (gauge — no delta, current state).
+                "slippage_summary": dict(snap.get("slippage_summary") or {}),
+                # Mode / strategies.
+                "mode": snap.get("mode"),
+                "strategies_enabled": list(snap.get("strategies_enabled") or []),
+                "matcher": snap.get("news_matcher_mode"),
+                "scorer": snap.get("scorer_kind"),
+                "kill_switch_engaged": snap.get("kill_switch_engaged", False),
+                "kill_switch_reason": snap.get("kill_switch_reason"),
+                "last_refresh_error": snap.get("last_refresh_error"),
+            }
+
+            # Per-window deltas — the actually-readable view.
+            deltas: dict[str, Any] = {}
+            if prev is not None:
+                for k in (
+                    "pipeline_ticks_total", "strategies_evaluated_total",
+                    "signals_emitted_total", "signals_aggregated_total",
+                    "risk_accepted_total", "risk_rejected_total",
+                    "orders_submitted_total",
+                    "news_ingested_total", "news_processed_total",
+                    "news_signals_emitted_total",
+                ):
+                    cur_v = int(cur.get(k) or 0)
+                    prev_v = int(prev.get(k) or 0)
+                    deltas[f"{k}_delta"] = max(0, cur_v - prev_v)
+                try:
+                    deltas["nav_change_usd"] = float(cur["nav_usd"]) - float(prev["nav_usd"])
+                    deltas["nav_change_pct"] = (
+                        deltas["nav_change_usd"] / float(prev["nav_usd"])
+                        if float(prev["nav_usd"]) > 0 else 0.0
+                    )
+                except Exception:
+                    deltas["nav_change_usd"] = 0
+                    deltas["nav_change_pct"] = 0.0
+            cur["deltas"] = deltas
+
+            # Persist if DB available; in-memory log-only otherwise.
+            try:
+                db = await get_db()
+                await insert_ops_report(
+                    db,
+                    ts=now,
+                    window_sec=interval_sec,
+                    payload=cur,
+                )
+                log.info(
+                    "ops_report.written",
+                    nav=cur["nav_usd"],
+                    orders_delta=deltas.get("orders_submitted_total_delta", 0),
+                    signals_delta=deltas.get("signals_emitted_total_delta", 0),
+                )
+            except Exception as exc:
+                log.debug("ops_report.persist_failed", error=str(exc)[:120])
+
+            prev = cur
+        except Exception as exc:
+            log.warning("ops_report.cycle_error", error=str(exc)[:200])
+
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=interval_sec)
+            return
+        except asyncio.TimeoutError:
+            continue
+
+
 async def _portfolio_persist_loop(
     stop: asyncio.Event,
     pipeline: Pipeline,
@@ -1519,6 +1632,17 @@ async def run() -> None:
             name="smart_money_feed",
         )
     )
+
+    # Phase P — operations report. Every 60min snapshots key counters +
+    # writes a row to ops_reports. /api/ops-reports serves them; /reports
+    # page renders trade funnel / news funnel / slippage / NAV history.
+    if db_ok:
+        tasks.append(
+            asyncio.create_task(
+                _ops_report_loop(stop_event, pipeline, broker, log),
+                name="ops_report",
+            )
+        )
 
     # Phase N.3 — ExitMonitor. Scans positions every 10s, emits SELL on
     # profit-take (+20%), stop-loss (-30%), or time-decay (<6h to resolution).
