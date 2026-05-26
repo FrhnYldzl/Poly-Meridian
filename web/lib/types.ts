@@ -129,6 +129,15 @@ export interface AgentSnapshot {
   // Genesis NAV — Ledger.starting_cash, surfaced so "vs start" math works
   // when PAPER_STARTING_NAV overrides the $100K default.
   starting_nav_usd?: number;
+  // Phase Q.1 — per-(strategy, reason) reject counts.
+  //   { "arbitrage": { "no_arb_gap": 1234, "no_book": 5 }, ... }
+  // Surfaces WHY each strategy returned None, so the operator can see
+  // which constraint is killing trades.
+  strategy_rejects?: Record<string, Record<string, number>>;
+  // Phase K — slippage drift summary (median realized vs predicted).
+  slippage_summary?: Record<string, unknown>;
+  // Diagnostic — last broker_refresh_loop exception, empty when healthy.
+  last_refresh_error?: string | null;
 }
 
 export type StreamEvent =
