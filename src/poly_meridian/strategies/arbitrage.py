@@ -69,7 +69,17 @@ class ArbitrageStrategy(BaseStrategy):
         yes_ask = yes_book.best_ask()
         no_ask = no_book.best_ask()
         if yes_ask is None or no_ask is None:
-            PM_STRATEGY_REJECT.labels(strategy="arbitrage", reason="no_best_ask").inc()
+            # Phase Q.2a: split per-side so we can tell from /api/state
+            # which book is missing asks — WS dispatch bug shows up as
+            # both sides missing, single-side empty shows up as a clear
+            # asymmetric count, and `no_ask_either` is the legacy bucket.
+            if yes_ask is None and no_ask is None:
+                reason = "no_ask_both_sides"
+            elif yes_ask is None:
+                reason = "no_yes_ask"
+            else:
+                reason = "no_no_ask"
+            PM_STRATEGY_REJECT.labels(strategy="arbitrage", reason=reason).inc()
             return None
 
         yes_price, yes_size = yes_ask

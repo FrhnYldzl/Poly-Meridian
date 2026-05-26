@@ -92,6 +92,11 @@ class Snapshot:
     # EXACTLY which constraint is killing trades. Top-N bucket per strategy
     # surfaced so dashboard panel is bounded.
     strategy_rejects: dict[str, dict[str, int]] = field(default_factory=dict)
+    # Phase Q.2a: book population health — how many of the WS-subscribed
+    # books have bids/asks/both/neither. If "asks_only" or "bids_only" is
+    # the dominant bucket, WS dispatch is missing one side OR bootstrap
+    # didn't fill it. Bypasses strategy-level proxies for direct visibility.
+    book_health: dict[str, int] = field(default_factory=dict)
     # Slippage drift monitor (Phase K). None when < 10 fills observed yet.
     slippage_summary: dict[str, Any] = field(default_factory=dict)
 
@@ -139,6 +144,7 @@ class Snapshot:
             "starting_nav_usd": self.starting_nav_usd,
             "last_refresh_error": self.last_refresh_error,
             "strategy_rejects": self.strategy_rejects,
+            "book_health": self.book_health,
             "slippage_summary": self.slippage_summary,
         }
 

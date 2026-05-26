@@ -142,7 +142,15 @@ def gamma_market_to_domain(raw: dict[str, Any]) -> Market | None:
         event_id=extract_event_id(raw),
         yes_token_id=str(yes_tid),
         no_token_id=str(no_tid),
-        end_date_iso=_to_datetime(raw.get("endDateIso") or raw.get("end_date_iso")),
+        # Phase Q.2b: Gamma's actual field is `endDate` (ISO-8601 string).
+        # `endDateIso` was a guess that returned None for every market and
+        # left stat_quant.time_decay permanently dark. Try all known
+        # variants and fall back to `end_date_iso` for legacy/test rows.
+        end_date_iso=_to_datetime(
+            raw.get("endDate")
+            or raw.get("endDateIso")
+            or raw.get("end_date_iso")
+        ),
         active=bool(raw.get("active", True)),
         closed=bool(raw.get("closed", False)),
         liquidity_usd=_to_decimal(raw.get("liquidityNum") or raw.get("liquidity")),

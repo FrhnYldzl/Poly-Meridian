@@ -452,6 +452,27 @@ async def _broker_refresh_loop(
             except Exception:
                 pass
 
+            # Phase Q.2a: book-health snapshot. Walks pipeline._books and
+            # counts: both sides populated, bids-only, asks-only, empty.
+            # If `asks_only=0` and `bids_only` dominates, then WS only
+            # streams bid updates (or bootstrap fetched empty asks).
+            try:
+                bh = {"both": 0, "bids_only": 0, "asks_only": 0, "empty": 0}
+                for tid, bk in pipeline._books.items():  # noqa: SLF001
+                    has_b = bool(bk.bids)
+                    has_a = bool(bk.asks)
+                    if has_b and has_a:
+                        bh["both"] += 1
+                    elif has_b:
+                        bh["bids_only"] += 1
+                    elif has_a:
+                        bh["asks_only"] += 1
+                    else:
+                        bh["empty"] += 1
+                broker.snapshot.book_health = bh
+            except Exception:
+                pass
+
             # Trade-flow funnel: strategy signals → aggregator → risk → orders.
             # Surfaces the drop-off so we can see WHY an order didn't fire
             # (aggregator conflict vs risk reject vs no signal at all).
