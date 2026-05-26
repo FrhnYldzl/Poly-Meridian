@@ -59,19 +59,24 @@ class SentimentStrategy(BaseStrategy):
         if not self.enabled:
             return None
 
+        from poly_meridian.pipeline import PM_STRATEGY_REJECT
         rows = self._recent_signals.get(market.condition_id, [])
         if len(rows) < self.min_signals:
+            PM_STRATEGY_REJECT.labels(strategy="sentiment", reason="no_news_signals").inc()
             return None
 
         agg = aggregate_signals(rows)
         if agg.impact_max < self.impact_threshold:
+            PM_STRATEGY_REJECT.labels(strategy="sentiment", reason="impact_below_thr").inc()
             return None
         if agg.winning_direction == "NEUTRAL":
+            PM_STRATEGY_REJECT.labels(strategy="sentiment", reason="neutral_direction").inc()
             return None
 
         # Conviction = clamp(impact * |sentiment|), bounded [0,1].
         conviction = max(0.0, min(1.0, agg.impact_max * abs(agg.sentiment_avg)))
         if conviction <= 0.0:
+            PM_STRATEGY_REJECT.labels(strategy="sentiment", reason="conviction_zero").inc()
             return None
 
         if agg.winning_direction == "YES":

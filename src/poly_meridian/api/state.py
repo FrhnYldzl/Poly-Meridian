@@ -88,6 +88,10 @@ class Snapshot:
     # Diagnostic: last error in broker_refresh_loop, surfaced for debugging
     # silent failures without Railway log access. Empty when healthy.
     last_refresh_error: str | None = None
+    # Phase Q.1: per-(strategy, reason) reject counts. Tells the operator
+    # EXACTLY which constraint is killing trades. Top-N bucket per strategy
+    # surfaced so dashboard panel is bounded.
+    strategy_rejects: dict[str, dict[str, int]] = field(default_factory=dict)
     # Slippage drift monitor (Phase K). None when < 10 fills observed yet.
     slippage_summary: dict[str, Any] = field(default_factory=dict)
 
@@ -134,6 +138,7 @@ class Snapshot:
             "thesis_nav_usd": self.thesis_nav_usd,
             "starting_nav_usd": self.starting_nav_usd,
             "last_refresh_error": self.last_refresh_error,
+            "strategy_rejects": self.strategy_rejects,
             "slippage_summary": self.slippage_summary,
         }
 

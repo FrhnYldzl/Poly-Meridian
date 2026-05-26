@@ -115,14 +115,17 @@ class SmartMoneyStrategy(BaseStrategy):
     async def evaluate(
         self, market: Market, features: Features
     ) -> StrategySignal | None:
+        from poly_meridian.pipeline import PM_STRATEGY_REJECT
         if not self.enabled:
             return None
         cs = self._cluster_state.get(market.condition_id)
         if cs is None:
+            PM_STRATEGY_REJECT.labels(strategy="smart_money", reason="no_cluster_state").inc()
             return None
 
         now = datetime.now(UTC)
         if (now - cs.last_update).total_seconds() > self.freshness_max_sec:
+            PM_STRATEGY_REJECT.labels(strategy="smart_money", reason="cluster_stale").inc()
             return None
 
         # Latency decay: only flows within last 30min count toward cluster.
@@ -141,26 +144,24 @@ class SmartMoneyStrategy(BaseStrategy):
             no_tier1=no_tier1, no_tier2=no_tier2,
         )
         if chosen is None:
+            PM_STRATEGY_REJECT.labels(strategy="smart_money", reason="cluster_short").inc()
             return None
 
         direction, cluster_tier, cluster_wallets, raw_flows = chosen
 
         # Tier 3 fully-observation mode (no auto-trade) → emit nothing.
         if cluster_tier == 3 and not self.tier3_auto_trade:
-            log.info(
-                "smart_money.tier3_surface_only",
-                condition_id=market.condition_id,
-                direction=direction,
-                n_wallets=len(cluster_wallets),
-            )
+            PM_STRATEGY_REJECT.labels(strategy="smart_money", reason="tier3_observe_only").inc()
             return None
 
         token_id = market.yes_token_id if direction == "YES" else market.no_token_id
         book = self._books.get(token_id)
         if book is None:
+            PM_STRATEGY_REJECT.labels(strategy="smart_money", reason="no_book").inc()
             return None
         best_ask = book.best_ask()
         if best_ask is None:
+            PM_STRATEGY_REJECT.labels(strategy="smart_money", reason="no_best_ask").inc()
             return None
         price, _ = best_ask
 

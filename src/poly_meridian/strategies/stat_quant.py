@@ -116,19 +116,24 @@ class StatQuantStrategy(BaseStrategy):
     # ---------------- sub-signals ----------------
 
     def _mean_reversion(self, market: Market, features: Features) -> StrategySignal | None:
+        from poly_meridian.pipeline import PM_STRATEGY_REJECT
         win = self._history.get(market.yes_token_id)
         if win is None or len(win.prices) < self.mr_min_window:
+            PM_STRATEGY_REJECT.labels(strategy="stat_quant.mean_reversion", reason="no_history").inc()
             return None
         z = rolling_zscore(win.list())
         if z is None or abs(z) < self.mr_zscore_threshold:
+            PM_STRATEGY_REJECT.labels(strategy="stat_quant.mean_reversion", reason="z_below_thr").inc()
             return None
         # Bet against the move: high z → SELL YES (i.e. BUY NO).
         book_token = market.no_token_id if z > 0 else market.yes_token_id
         book = self._books.get(book_token)
         if book is None:
+            PM_STRATEGY_REJECT.labels(strategy="stat_quant.mean_reversion", reason="no_book").inc()
             return None
         best_ask = book.best_ask()
         if best_ask is None:
+            PM_STRATEGY_REJECT.labels(strategy="stat_quant.mean_reversion", reason="no_best_ask").inc()
             return None
         price, _ = best_ask
         action = Action.BUY_NO if z > 0 else Action.BUY_YES
@@ -154,23 +159,29 @@ class StatQuantStrategy(BaseStrategy):
         )
 
     def _momentum(self, market: Market, features: Features) -> StrategySignal | None:
+        from poly_meridian.pipeline import PM_STRATEGY_REJECT
         win = self._history.get(market.yes_token_id)
         if win is None or len(win.prices) < self.mo_lookback:
+            PM_STRATEGY_REJECT.labels(strategy="stat_quant.momentum", reason="no_history").inc()
             return None
         recent = list(win.prices)[-self.mo_lookback:]
         ret = momentum(recent)
         if ret is None or abs(ret) < self.mo_return_threshold:
+            PM_STRATEGY_REJECT.labels(strategy="stat_quant.momentum", reason="ret_below_thr").inc()
             return None
         if self._volume_1h.get(market.yes_token_id, 0.0) < self.mo_min_volume:
+            PM_STRATEGY_REJECT.labels(strategy="stat_quant.momentum", reason="low_volume").inc()
             return None
         # Bet WITH the trend.
         action = Action.BUY_YES if ret > 0 else Action.BUY_NO
         book_token = market.yes_token_id if ret > 0 else market.no_token_id
         book = self._books.get(book_token)
         if book is None:
+            PM_STRATEGY_REJECT.labels(strategy="stat_quant.momentum", reason="no_book").inc()
             return None
         best_ask = book.best_ask()
         if best_ask is None:
+            PM_STRATEGY_REJECT.labels(strategy="stat_quant.momentum", reason="no_best_ask").inc()
             return None
         price, _ = best_ask
 
@@ -192,8 +203,10 @@ class StatQuantStrategy(BaseStrategy):
         )
 
     def _vol_breakout(self, market: Market, features: Features) -> StrategySignal | None:
+        from poly_meridian.pipeline import PM_STRATEGY_REJECT
         win = self._history.get(market.yes_token_id)
         if win is None or len(win.prices) < self._capacity:
+            PM_STRATEGY_REJECT.labels(strategy="stat_quant.vol_breakout", reason="no_history").inc()
             return None
         prices = win.list()
         # Compare recent N to prior N — Phase 4 minimal logic.
@@ -203,21 +216,26 @@ class StatQuantStrategy(BaseStrategy):
         prior_vol = rolling_volatility(prior) or 0.0
         recent_vol = rolling_volatility(recent) or 0.0
         if prior_vol == 0 or prior_vol > self.vb_low_vol_threshold:
+            PM_STRATEGY_REJECT.labels(strategy="stat_quant.vol_breakout", reason="prior_vol_too_high").inc()
             return None
         if recent_vol < prior_vol * self.vb_breakout_multiplier:
+            PM_STRATEGY_REJECT.labels(strategy="stat_quant.vol_breakout", reason="no_breakout").inc()
             return None
 
         ret = momentum(recent) or 0.0
         if abs(ret) < 0.01:
+            PM_STRATEGY_REJECT.labels(strategy="stat_quant.vol_breakout", reason="ret_below_thr").inc()
             return None
 
         action = Action.BUY_YES if ret > 0 else Action.BUY_NO
         book_token = market.yes_token_id if ret > 0 else market.no_token_id
         book = self._books.get(book_token)
         if book is None:
+            PM_STRATEGY_REJECT.labels(strategy="stat_quant.vol_breakout", reason="no_book").inc()
             return None
         best_ask = book.best_ask()
         if best_ask is None:
+            PM_STRATEGY_REJECT.labels(strategy="stat_quant.vol_breakout", reason="no_best_ask").inc()
             return None
         price, _ = best_ask
         conviction = min(1.0, recent_vol / (prior_vol * self.vb_breakout_multiplier))
@@ -239,20 +257,25 @@ class StatQuantStrategy(BaseStrategy):
         )
 
     def _time_decay(self, market: Market, features: Features) -> StrategySignal | None:
+        from poly_meridian.pipeline import PM_STRATEGY_REJECT
         if market.end_date_iso is None:
+            PM_STRATEGY_REJECT.labels(strategy="stat_quant.time_decay", reason="no_end_date").inc()
             return None
         now = datetime.now(UTC)
         hours = time_to_resolution_hours(now, market.end_date_iso)
         if hours is None or hours <= 0 or hours > self.td_horizon_hours_max:
+            PM_STRATEGY_REJECT.labels(strategy="stat_quant.time_decay", reason="outside_horizon").inc()
             return None
 
         yes_book = self._books.get(market.yes_token_id)
         no_book = self._books.get(market.no_token_id)
         if yes_book is None or no_book is None:
+            PM_STRATEGY_REJECT.labels(strategy="stat_quant.time_decay", reason="no_book").inc()
             return None
         yes_mid = yes_book.mid()
         no_mid = no_book.mid()
         if yes_mid is None or no_mid is None:
+            PM_STRATEGY_REJECT.labels(strategy="stat_quant.time_decay", reason="no_mid").inc()
             return None
 
         # If the market thinks YES is "very likely" (>0.5+threshold) but the price
@@ -264,13 +287,16 @@ class StatQuantStrategy(BaseStrategy):
         elif yes_p < 0.5 - self.td_price_deviation_threshold:
             action, token_id, edge_dir = Action.BUY_NO, market.no_token_id, 1.0
         else:
+            PM_STRATEGY_REJECT.labels(strategy="stat_quant.time_decay", reason="price_within_band").inc()
             return None
 
         book = self._books.get(token_id)
         if book is None:
+            PM_STRATEGY_REJECT.labels(strategy="stat_quant.time_decay", reason="no_book").inc()
             return None
         best_ask = book.best_ask()
         if best_ask is None:
+            PM_STRATEGY_REJECT.labels(strategy="stat_quant.time_decay", reason="no_best_ask").inc()
             return None
         price, _ = best_ask
 

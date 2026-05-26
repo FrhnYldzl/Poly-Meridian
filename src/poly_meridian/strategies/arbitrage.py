@@ -59,14 +59,17 @@ class ArbitrageStrategy(BaseStrategy):
         if not self.enabled:
             return None
 
+        from poly_meridian.pipeline import PM_STRATEGY_REJECT
         yes_book = self._books.get(market.yes_token_id)
         no_book = self._books.get(market.no_token_id)
         if yes_book is None or no_book is None:
+            PM_STRATEGY_REJECT.labels(strategy="arbitrage", reason="no_book").inc()
             return None
 
         yes_ask = yes_book.best_ask()
         no_ask = no_book.best_ask()
         if yes_ask is None or no_ask is None:
+            PM_STRATEGY_REJECT.labels(strategy="arbitrage", reason="no_best_ask").inc()
             return None
 
         yes_price, yes_size = yes_ask
@@ -75,12 +78,14 @@ class ArbitrageStrategy(BaseStrategy):
         raw_edge = 1.0 - total_ask  # positive when arb exists
 
         if raw_edge < self.imbalance_threshold:
+            PM_STRATEGY_REJECT.labels(strategy="arbitrage", reason="no_arb_gap").inc()
             return None
 
         # Net of worst-case fees on both legs (Phase 2 conservative).
         fee_bps_both_legs = self.default_taker_fee_bps * 2
         net_edge_bps = raw_edge * 10_000 - fee_bps_both_legs
         if net_edge_bps < self.min_edge_after_fees_bps:
+            PM_STRATEGY_REJECT.labels(strategy="arbitrage", reason="edge_eaten_by_fees").inc()
             return None
 
         # Choose the cheaper leg (smaller-priced ask) to size against — the

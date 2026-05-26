@@ -54,6 +54,17 @@ PM_ORDER_SUBMITTED = Counter(
     "orders submitted to executor",
     ["side", "mode"],
 )
+# Phase Q.1 — instrument WHY each strategy returns None on a tick.
+# Labels: strategy name (arbitrage, sentiment, smart_money, stat_quant,
+# fundamentals) + reason (no_book, z_below_thr, no_history, cluster_short,
+# resolver_none, edge_too_small, etc.). Aggregating these tells the
+# operator EXACTLY where evaluations die, so the binding constraint can
+# be loosened intentionally instead of by guesswork.
+PM_STRATEGY_REJECT = Counter(
+    "pm_strategy_reject_total",
+    "per-strategy reject reasons (why evaluate() returned None)",
+    ["strategy", "reason"],
+)
 
 
 class Pipeline:

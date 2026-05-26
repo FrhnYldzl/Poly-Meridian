@@ -127,8 +127,12 @@ class FundamentalsStrategy(BaseStrategy):
                     error=str(exc),
                 )
         if est is None:
+            from poly_meridian.pipeline import PM_STRATEGY_REJECT
+            PM_STRATEGY_REJECT.labels(strategy="fundamentals", reason="resolver_none").inc()
             return None
         if est.confidence < self.min_confidence:
+            from poly_meridian.pipeline import PM_STRATEGY_REJECT
+            PM_STRATEGY_REJECT.labels(strategy="fundamentals", reason="low_confidence").inc()
             return None
 
         yes_book = self._books.get(market.yes_token_id)

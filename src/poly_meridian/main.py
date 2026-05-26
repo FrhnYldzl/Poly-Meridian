@@ -292,6 +292,7 @@ async def _broker_refresh_loop(
         PM_RISK_DECISION,
         PM_SIGNAL_AGGREGATED,
         PM_SIGNAL_EMITTED,
+        PM_STRATEGY_REJECT,
     )
     from poly_meridian.sentiment.news_processor import (
         PM_NEWS_PROCESSED,
@@ -432,6 +433,24 @@ async def _broker_refresh_loop(
                         pass
                 except Exception:
                     pass
+
+            # Phase Q.1: aggregate strategy reject reasons (per-strategy
+            # breakdown). Reads samples from PM_STRATEGY_REJECT (labeled
+            # counter) and groups into {strategy: {reason: count}}.
+            try:
+                rejects: dict[str, dict[str, int]] = {}
+                for fam in PM_STRATEGY_REJECT.collect():
+                    for s in fam.samples:
+                        if not s.name.endswith("_total"):
+                            continue
+                        lbl = s.labels or {}
+                        strat = str(lbl.get("strategy", "?"))
+                        reason = str(lbl.get("reason", "?"))
+                        rejects.setdefault(strat, {})[reason] = int(s.value)
+                    break
+                broker.snapshot.strategy_rejects = rejects
+            except Exception:
+                pass
 
             # Trade-flow funnel: strategy signals → aggregator → risk → orders.
             # Surfaces the drop-off so we can see WHY an order didn't fire
