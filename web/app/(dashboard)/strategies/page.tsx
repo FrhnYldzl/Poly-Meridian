@@ -134,6 +134,18 @@ export default function StrategiesPage() {
     0,
   );
 
+  // Phase R.6 — LLM cost + cache metrics. Surfaces Claude spend in $/day
+  // so the operator can see exactly what each market evaluation costs.
+  const llmU = snapshot?.llm_usage ?? {};
+  const llmEnabled = Boolean(llmU.llm_enabled);
+  const llmTotal = llmU.calls_total ?? 0;
+  const llmCacheRate =
+    llmTotal > 0 && (llmU.calls_cache_hits ?? 0) > 0
+      ? ((llmU.calls_cache_hits ?? 0) / (llmTotal + (llmU.calls_cache_hits ?? 0))) * 100
+      : 0;
+  const llmDeepShare =
+    llmTotal > 0 ? ((llmU.calls_deep ?? 0) / llmTotal) * 100 : 0;
+
   return (
     <div className="flex h-full flex-col">
       <PageHeader
@@ -143,6 +155,48 @@ export default function StrategiesPage() {
       <div className="border-b border-terminal-border">
         <StrategiesPanel enabled={enabled} signals={signals} />
       </div>
+      {/* Phase R.6 — LLM Resolver panel. Surfaces Claude API spend +
+          cache efficiency + Sonnet/Haiku tier mix so we can see in
+          real-time how much information edge costs. */}
+      {llmEnabled && (
+        <div className="border-b border-terminal-border">
+          <Panel
+            title="LLM Resolver"
+            subtitle={`Claude probability estimator — daily \$${(llmU.spend_usd_today ?? 0).toFixed(4)} spent`}
+          >
+            <div className="grid grid-cols-2 gap-2 p-2 md:grid-cols-4 xl:grid-cols-6">
+              <Stat label="Calls (total)" value={llmTotal.toLocaleString()} />
+              <Stat
+                label="Triage / Deep"
+                value={`${(llmU.calls_triage ?? 0).toLocaleString()} / ${(llmU.calls_deep ?? 0).toLocaleString()}`}
+              />
+              <Stat
+                label="Deep share"
+                value={`${llmDeepShare.toFixed(1)}%`}
+                tone={llmDeepShare > 30 ? "text-terminal-amber" : undefined}
+              />
+              <Stat
+                label="Cache hits"
+                value={`${(llmU.calls_cache_hits ?? 0).toLocaleString()} (${llmCacheRate.toFixed(0)}%)`}
+                tone="text-terminal-green"
+              />
+              <Stat
+                label="Tokens in/out"
+                value={`${((llmU.tokens_input ?? 0) / 1000).toFixed(1)}k / ${((llmU.tokens_output ?? 0) / 1000).toFixed(1)}k`}
+              />
+              <Stat
+                label="Budget blocked"
+                value={(llmU.calls_budget_blocked ?? 0).toLocaleString()}
+                tone={
+                  (llmU.calls_budget_blocked ?? 0) > 0
+                    ? "text-terminal-red"
+                    : "text-terminal-dim"
+                }
+              />
+            </div>
+          </Panel>
+        </div>
+      )}
       {/* Phase Q.1: reject-reason funnel — surfaces WHY each strategy
           returned None. If "no_book" dominates → WS book bug. If
           "z_below_thr" / "no_arb_gap" → thresholds too tight. */}

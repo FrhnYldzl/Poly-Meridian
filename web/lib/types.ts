@@ -134,6 +134,20 @@ export interface AgentSnapshot {
   // Surfaces WHY each strategy returned None, so the operator can see
   // which constraint is killing trades.
   strategy_rejects?: Record<string, Record<string, number>>;
+  // Phase R.6 — LLM resolver usage. Tracks Claude API spend, cache
+  // hit rate, model tier mix.
+  llm_usage?: {
+    llm_enabled?: boolean;
+    calls_total?: number;
+    calls_triage?: number;
+    calls_deep?: number;
+    calls_cache_hits?: number;
+    calls_budget_blocked?: number;
+    tokens_input?: number;
+    tokens_output?: number;
+    spend_usd_today?: number;
+    last_reset_date?: string;
+  };
   // Phase K — slippage drift summary (median realized vs predicted).
   slippage_summary?: Record<string, unknown>;
   // Diagnostic — last broker_refresh_loop exception, empty when healthy.
