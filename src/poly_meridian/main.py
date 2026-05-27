@@ -485,6 +485,15 @@ async def _broker_refresh_loop(
             except Exception:
                 pass
 
+            # Phase R.8: calibration metrics — Brier score, accuracy,
+            # bucket distribution. Empty until first settled trade.
+            try:
+                cs = getattr(pipeline, "calibration_store", None)
+                if cs is not None:
+                    broker.snapshot.calibration = cs.metrics().as_dict()
+            except Exception:
+                pass
+
             # Trade-flow funnel: strategy signals → aggregator → risk → orders.
             # Surfaces the drop-off so we can see WHY an order didn't fire
             # (aggregator conflict vs risk reject vs no signal at all).
@@ -1708,6 +1717,14 @@ async def run() -> None:
     # Phase N.3 — ExitMonitor. Scans positions every 10s, emits SELL on
     # profit-take (+20%), stop-loss (-30%), or time-decay (<6h to resolution).
     # Routes via executor directly so kill-switch flatten (L.1) still applies.
+    # Phase R.8 — calibration store. Records (LLM-claimed probability,
+    # actual outcome) on every settled fundamentals trade so we can
+    # compute Brier score + bucketed accuracy across the lifetime of
+    # the bot. Surfaced on /api/state.calibration.
+    from poly_meridian.fundamentals.calibration import CalibrationStore
+    calibration_store = CalibrationStore(max_entries=500)
+    pipeline.calibration_store = calibration_store  # type: ignore[attr-defined]
+
     exit_monitor = ExitMonitor(
         ledger=pipeline.ledger,
         executor=pipeline.executor,
@@ -1720,6 +1737,7 @@ async def run() -> None:
         # NO position ever cleared $25 and the monitor effectively
         # ignored ALL exits. Aramco at -42% sat open because of this.
         min_position_notional_usd=1.0,
+        calibration_recorder=calibration_store,
     )
     pipeline.exit_monitor = exit_monitor  # type: ignore[attr-defined]
     tasks.append(

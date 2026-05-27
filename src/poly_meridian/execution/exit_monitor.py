@@ -65,6 +65,10 @@ class ExitMonitor:
         # paper-mode $250 NAV reality. Caller can raise it in production.
         min_position_notional_usd: float = 1.0,
         scan_interval_sec: int = 10,
+        # Phase R.8 — calibration recorder. Injected from main; records
+        # (claimed_p_long, won) for every fundamentals-driven settlement
+        # so we can compute Brier score across LLM predictions.
+        calibration_recorder: Any | None = None,
     ) -> None:
         self.ledger = ledger
         self.executor = executor
@@ -81,27 +85,77 @@ class ExitMonitor:
         # time to fill; we don't want spam).
         self._cooldown_until: dict[str, datetime] = {}
         self._cooldown_sec = 30.0
+        # Phase R.8 — calibration recorder. Optional; when present,
+        # _emit_settlement records (claimed_p, outcome) tuples for Brier
+        # scoring.
+        self._calibration_recorder: Any | None = calibration_recorder
 
     # ---------------- public API ----------------
 
     async def scan_once(self) -> int:
-        """Walk open positions, emit exits where triggered. Returns count."""
+        """Walk open positions, emit exits where triggered. Returns count.
+
+        Phase R.7 — also detects RESOLVED markets and settles paper
+        positions to their final binary value ($1 if our side won, $0
+        if it lost). Settlement bypasses the cooldown and the dust
+        floor — even a $0.50 position needs to be settled.
+        """
         # Respect the kill-switch — when engaged, the operator is in control;
         # auto-exits would surprise them and may close at bad prices.
         if self.kill_switch is not None and getattr(self.kill_switch, "engaged", False):
             return 0
         n_exits = 0
-        # Build a token → end_date lookup once per scan.
+        # Build token → end_date AND token → settle_price (0/1) lookups
+        # once per scan. tok_to_settle is empty when the market is still
+        # open; populated only when Gamma reports closed=true with
+        # numeric outcomePrices.
         tok_to_end: dict[str, datetime] = {}
+        tok_to_settle: dict[str, float] = {}
         for raw_m in self.market_cache.get("markets", []) or []:
             m = gamma_market_to_domain(raw_m)
-            if m is None or m.end_date_iso is None:
+            if m is None:
                 continue
-            tok_to_end[m.yes_token_id] = m.end_date_iso
-            tok_to_end[m.no_token_id] = m.end_date_iso
+            if m.end_date_iso is not None:
+                tok_to_end[m.yes_token_id] = m.end_date_iso
+                tok_to_end[m.no_token_id] = m.end_date_iso
+            # Settlement extraction. Gamma exposes `outcomePrices` as a
+            # JSON-encoded string of two strings: ["1", "0"] = YES won,
+            # ["0", "1"] = NO won, ["0", "0"] = voided/refunded.
+            if m.closed and isinstance(raw_m, dict):
+                try:
+                    import json as _json
+                    op = raw_m.get("outcomePrices")
+                    if isinstance(op, str):
+                        op = _json.loads(op)
+                    if isinstance(op, list) and len(op) >= 2:
+                        yes_p = float(op[0])
+                        no_p = float(op[1])
+                        # Only settle when at least one side is "won" —
+                        # otherwise it's a voided market and we'd zero
+                        # out the position incorrectly.
+                        if yes_p > 0 or no_p > 0:
+                            tok_to_settle[m.yes_token_id] = yes_p
+                            tok_to_settle[m.no_token_id] = no_p
+                except Exception:
+                    pass
 
         now = datetime.now(UTC)
         for pos in self.ledger.positions():
+            # Settlement path takes priority — it bypasses dust floor +
+            # cooldown so even a $0.50 position gets cleared on resolve.
+            settle_px = tok_to_settle.get(pos.token_id)
+            if settle_px is not None:
+                try:
+                    await self._emit_settlement(pos, settle_px, now)
+                    n_exits += 1
+                except Exception as exc:
+                    log.warning(
+                        "exit.settlement_failed",
+                        token_id=pos.token_id[:14],
+                        error=str(exc)[:200],
+                    )
+                continue
+
             # Skip tiny positions (rounding dust).
             notional = float(abs(pos.qty)) * float(pos.last_mark or 0)
             if notional < self.min_position_notional_usd:
@@ -187,6 +241,102 @@ class ExitMonitor:
                 return "time_decay_close", mtm_pct
 
         return None, mtm_pct
+
+    async def _emit_settlement(
+        self,
+        pos: PositionState,
+        settle_price: float,
+        now: datetime,
+    ) -> None:
+        """Phase R.7 — flush a held position at the binary settlement
+        price ($1 if our side won, $0 if it lost). Goes through the
+        executor as a SELL @ settle_price so PnL accounting (Phase N.6)
+        nets it correctly via ledger.apply_fill.
+
+        Also records the (entry_p_yes, actual_outcome) tuple for the
+        calibration ledger so we can compute Brier score across LLM
+        predictions later (Phase R.8)."""
+        price = Decimal(str(settle_price)).quantize(Decimal("0.0001"))
+        size = Decimal(str(abs(float(pos.qty)))).quantize(Decimal("0.01"))
+        if size <= 0:
+            return
+
+        mtm_pct = float((price - pos.avg_cost) / pos.avg_cost) if pos.avg_cost > 0 else 0.0
+        decision = TradeDecision(
+            ts=now,
+            strategy=f"exit.settlement",
+            token_id=pos.token_id,
+            side=Side.SELL,
+            order_type=OrderType.FAK,
+            price=price,
+            size=size,
+        )
+        log.warning(
+            "exit.settle",
+            token_id=pos.token_id[:14],
+            qty=float(pos.qty),
+            avg_cost=float(pos.avg_cost),
+            settle_price=float(settle_price),
+            mtm_pct=round(mtm_pct, 4),
+            entry_strategy=pos.entry_strategy,
+        )
+        order: Order = await self.executor.submit(decision)
+
+        # Calibration recorder hook — only LLM-driven entries are scored
+        # (other strategies don't claim a forecast probability).
+        recorder = getattr(self, "_calibration_recorder", None)
+        if recorder is not None and (pos.entry_strategy or "").startswith("fundamentals"):
+            try:
+                recorder.record(
+                    token_id=pos.token_id,
+                    settle_price=float(settle_price),
+                    pos=pos,
+                    ts=now,
+                )
+            except Exception as exc:
+                log.debug("exit.calibration_record_failed", error=str(exc)[:120])
+
+        if self.broker is not None:
+            try:
+                self.broker.push_signal({
+                    "ts": now.isoformat(),
+                    "strategy": "exit.settlement",
+                    "condition_id": "",
+                    "token_id": pos.token_id,
+                    "edge": 0.0,
+                    "conviction": 1.0,
+                    "suggested_action": "SELL",
+                    "rationale": {
+                        "reason": "settlement",
+                        "settle_price": float(settle_price),
+                        "avg_cost": float(pos.avg_cost),
+                        "mtm_pct": mtm_pct,
+                        "qty": float(pos.qty),
+                        "entry_strategy": pos.entry_strategy,
+                    },
+                })
+                self.broker.push_order({
+                    "ts": (order.ts_filled or order.ts_created).isoformat(),
+                    "order_id": order.order_id,
+                    "strategy": "exit.settlement",
+                    "contributors": ["exit.settlement"],
+                    "condition_id": "",
+                    "token_id": order.token_id,
+                    "side": order.side.value,
+                    "status": order.status.value,
+                    "price": float(order.price) if order.price is not None else None,
+                    "size": float(order.size),
+                    "filled_size": float(order.filled_size),
+                    "avg_fill_price": float(order.avg_fill_price)
+                        if order.avg_fill_price is not None else None,
+                    "mode": order.mode.value,
+                    "edge": 0.0,
+                    "conviction": 1.0,
+                    "size_pct": 0.0,
+                    "market_question": None,
+                })
+            except Exception:
+                pass
 
     async def _emit_exit(
         self,

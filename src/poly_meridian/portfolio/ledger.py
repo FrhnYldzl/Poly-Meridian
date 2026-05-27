@@ -49,6 +49,17 @@ class PositionState:
     # those bets are evidence-driven and should ride to binary settle.
     entry_strategy: str | None = None
     horizon: str | None = None   # "intraday" | "to_resolution"
+    # Phase R.8 — LLM-claimed forecast on this position. Stamped by
+    # paper_executor.apply_fill_with_prediction() (extended path used
+    # by FundamentalsStrategy via the signal rationale). Read by
+    # CalibrationStore on settlement to compute Brier score.
+    #   claimed_p_long       — LLM's p_yes for the side we BOUGHT
+    #                          (0.62 means "62% the side we bought wins")
+    #   claimed_confidence   — LLM's self-rated confidence in that estimate
+    #   claimed_base_rate    — LLM's base-rate prior (deep-tier only)
+    claimed_p_long: float | None = None
+    claimed_confidence: float | None = None
+    claimed_base_rate: float | None = None
 
     def unrealized_pnl(self) -> Decimal:
         return self.qty * (self.last_mark - self.avg_cost)

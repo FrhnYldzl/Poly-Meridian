@@ -204,27 +204,18 @@ class LLMResolver(CategoryResolver):
         market: Market,
         ctx: FundamentalsContext,
     ) -> ProbabilityEstimate | None:
-        """Sync wrapper expected by FundamentalsStrategy.
+        """Sync path — INTENTIONALLY DISABLED for LLMResolver.
 
-        FundamentalsStrategy.evaluate() is async, but each resolver call is
-        sync (legacy). We bridge by scheduling on the running loop. If no
-        loop is running (e.g. from a unit test), we use asyncio.run.
+        The CategoryResolver protocol declares a sync `resolve()`, but an
+        LLM call is inherently async (HTTPS round-trip). We can't block
+        the event loop here without deadlocking, so this path is wired
+        to return None. FundamentalsStrategy detects LLMResolver and
+        awaits `resolve_async()` directly — see strategies/fundamentals.py.
+
+        Anyone calling the sync path gets a clean None (which the
+        strategy treats as "no estimate") rather than a hung loop or
+        a misleading cancelled-future ghost.
         """
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            return asyncio.run(self.resolve_async(market, ctx))
-        # We're inside an async context — create a task and block on it
-        # via run_until_complete. But we can't nest loops, so use a
-        # threadsafe future bridge via run_coroutine_threadsafe if needed.
-        # Simpler: just await directly via a helper coroutine.
-        future = asyncio.ensure_future(self.resolve_async(market, ctx), loop=loop)
-        # NOTE: the existing FundamentalsStrategy.evaluate() is itself
-        # async but calls resolver.resolve() synchronously. We can't
-        # block here without deadlocking. The fix: have FundamentalsStrategy
-        # await an async resolver path. We expose `resolve_async` for that
-        # — the sync path returns None to be safe.
-        future.cancel()
         return None
 
     async def resolve_async(

@@ -100,6 +100,10 @@ class Snapshot:
     # Phase R — LLMResolver usage counters. Tracks Claude API spend,
     # cache hit rate, deep-vs-triage call mix. None when LLM is disabled.
     llm_usage: dict[str, Any] = field(default_factory=dict)
+    # Phase R.8 — calibration metrics. Brier score + bucketed accuracy
+    # of LLM predictions vs actual resolutions. Empty until first
+    # fundamentals position settles.
+    calibration: dict[str, Any] = field(default_factory=dict)
     # Slippage drift monitor (Phase K). None when < 10 fills observed yet.
     slippage_summary: dict[str, Any] = field(default_factory=dict)
 
@@ -149,6 +153,7 @@ class Snapshot:
             "strategy_rejects": self.strategy_rejects,
             "book_health": self.book_health,
             "llm_usage": self.llm_usage,
+            "calibration": self.calibration,
             "slippage_summary": self.slippage_summary,
         }
 

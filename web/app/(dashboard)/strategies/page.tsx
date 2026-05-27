@@ -146,6 +146,20 @@ export default function StrategiesPage() {
   const llmDeepShare =
     llmTotal > 0 ? ((llmU.calls_deep ?? 0) / llmTotal) * 100 : 0;
 
+  // Phase R.8 — calibration. Brier 0.25 = coin-flip, <0.20 = informed.
+  // Lower is better. We surface raw brier + bucket diagnostics.
+  const cal = snapshot?.calibration ?? {};
+  const calN = cal.n_entries ?? 0;
+  const brier = cal.brier_score;
+  const brierTone =
+    brier == null
+      ? "text-terminal-dim"
+      : brier < 0.18
+        ? "text-terminal-green"
+        : brier < 0.25
+          ? "text-terminal-amber"
+          : "text-terminal-red";
+
   return (
     <div className="flex h-full flex-col">
       <PageHeader
@@ -155,6 +169,75 @@ export default function StrategiesPage() {
       <div className="border-b border-terminal-border">
         <StrategiesPanel enabled={enabled} signals={signals} />
       </div>
+      {/* Phase R.8 — Calibration panel. Brier score, bucketed accuracy.
+          Empty until first fundamentals trade settles, then surfaces
+          whether Claude's claimed probabilities actually map to reality. */}
+      {llmEnabled && calN > 0 && (
+        <div className="border-b border-terminal-border">
+          <Panel
+            title="LLM Calibration"
+            subtitle={`${calN} settled predictions · Brier 0=perfect, 0.25=coin-flip`}
+          >
+            <div className="grid grid-cols-2 gap-2 p-2 md:grid-cols-5">
+              <Stat
+                label="Brier score"
+                value={brier != null ? brier.toFixed(4) : "—"}
+                tone={brierTone}
+              />
+              <Stat
+                label="Accuracy"
+                value={cal.accuracy != null ? `${(cal.accuracy * 100).toFixed(1)}%` : "—"}
+              />
+              <Stat
+                label="Mean confidence"
+                value={cal.mean_confidence != null ? `${(cal.mean_confidence * 100).toFixed(1)}%` : "—"}
+              />
+              <Stat
+                label="Mean p_long"
+                value={cal.mean_p_long != null ? cal.mean_p_long.toFixed(3) : "—"}
+              />
+              <Stat
+                label="Realized P&L"
+                value={`$${(cal.total_pnl_usd ?? 0).toFixed(2)}`}
+                tone={
+                  (cal.total_pnl_usd ?? 0) > 0
+                    ? "text-terminal-green"
+                    : (cal.total_pnl_usd ?? 0) < 0
+                      ? "text-terminal-red"
+                      : undefined
+                }
+              />
+            </div>
+            {/* Per-bucket calibration table — if "0.70-0.80" bucket
+                has accuracy way off 0.75, Claude is over/underconfident
+                in that range. Operators should pull weight from miscalibrated
+                buckets via the confidence floor. */}
+            {Object.keys(cal.bucket_counts ?? {}).length > 0 && (
+              <div className="border-t border-terminal-border px-2 pb-2 pt-2">
+                <div className="mb-1 font-mono text-[10px] uppercase tracking-wider text-terminal-dim">
+                  Per-bucket calibration (claimed conf → realized win rate)
+                </div>
+                <div className="grid grid-cols-5 gap-1.5 font-mono text-[10px]">
+                  {Object.entries(cal.bucket_counts ?? {}).map(([bucket, n]) => {
+                    const acc = cal.bucket_accuracy?.[bucket];
+                    return (
+                      <div
+                        key={bucket}
+                        className="rounded border border-terminal-border bg-terminal-bg px-1.5 py-1"
+                      >
+                        <div className="text-terminal-dim">{bucket}</div>
+                        <div className="numeric text-terminal-text">
+                          {acc != null ? `${(acc * 100).toFixed(0)}% · n=${n}` : `n=${n}`}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </Panel>
+        </div>
+      )}
       {/* Phase R.6 — LLM Resolver panel. Surfaces Claude API spend +
           cache efficiency + Sonnet/Haiku tier mix so we can see in
           real-time how much information edge costs. */}

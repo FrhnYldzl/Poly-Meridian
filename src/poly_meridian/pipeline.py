@@ -294,6 +294,26 @@ class Pipeline:
 
         order = await self.router.route(trade)
         PM_ORDER_SUBMITTED.labels(side=str(order.side), mode=str(order.mode)).inc()
+
+        # Phase R.8 — stamp LLM probability claim on the position so
+        # that on settlement we can compute Brier score. Find the
+        # contributing fundamentals signal and lift its rationale.
+        try:
+            llm_sig = next(
+                (s for s in signals if s.strategy == "fundamentals"
+                 and "our_p_long" in (s.rationale or {})),
+                None,
+            )
+            if llm_sig is not None:
+                pos = self.ledger.get_position(order.token_id)
+                if pos is not None:
+                    rat = llm_sig.rationale or {}
+                    pos.claimed_p_long = float(rat.get("our_p_long", 0.5))
+                    pos.claimed_confidence = float(rat.get("resolver_confidence", 0.0))
+                    if rat.get("base_rate") is not None:
+                        pos.claimed_base_rate = float(rat["base_rate"])
+        except Exception as exc:
+            log.debug("pipeline.calibration_stamp_failed", error=str(exc)[:120])
         # Surface the order on the dashboard. Use contributors from the agg
         # so the UI shows the *combined* strategy attribution rather than just
         # the last leg name.

@@ -148,6 +148,18 @@ export interface AgentSnapshot {
     spend_usd_today?: number;
     last_reset_date?: string;
   };
+  // Phase R.8 — LLM calibration metrics. Brier score + bucketed
+  // accuracy of past predictions vs actual resolutions.
+  calibration?: {
+    n_entries?: number;
+    brier_score?: number | null;
+    accuracy?: number | null;
+    mean_confidence?: number | null;
+    mean_p_long?: number | null;
+    total_pnl_usd?: number;
+    bucket_accuracy?: Record<string, number | null>;
+    bucket_counts?: Record<string, number>;
+  };
   // Phase K — slippage drift summary (median realized vs predicted).
   slippage_summary?: Record<string, unknown>;
   // Diagnostic — last broker_refresh_loop exception, empty when healthy.
