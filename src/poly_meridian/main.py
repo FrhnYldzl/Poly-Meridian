@@ -1065,6 +1065,9 @@ async def _portfolio_persist_loop(
         try:
             db = await get_db()
             # Mirror current positions. Closed positions (qty=0) get deleted.
+            # Phase T: persist FULL position metadata (entry_strategy,
+            # horizon, claimed_p_long/confidence/base_rate) so a restart
+            # rebuilds the complete Phase R audit trail.
             for p in pipeline.ledger.positions():
                 try:
                     await upsert_position(
@@ -1074,6 +1077,13 @@ async def _portfolio_persist_loop(
                         avg_cost=p.avg_cost,
                         last_mark=p.last_mark,
                         last_updated=p.last_updated,
+                        entry_strategy=p.entry_strategy,
+                        horizon=p.horizon,
+                        fees_paid=p.fees_paid,
+                        realized_pnl=p.realized_pnl,
+                        claimed_p_long=p.claimed_p_long,
+                        claimed_confidence=p.claimed_confidence,
+                        claimed_base_rate=p.claimed_base_rate,
                     )
                 except Exception as exc:
                     log.debug("persist.position_failed", error=str(exc)[:120])
@@ -1658,6 +1668,34 @@ async def run() -> None:
         except Exception as exc:
             log.warning("broker.backfill_failed", error=str(exc))
 
+        # Phase T — restore open positions and calibration history from
+        # DB. Without this, every Railway redeploy wipes the
+        # hold-to-resolution thesis (positions disappear) and the
+        # Brier score (calibration store empties). With this, the bot
+        # picks up where it left off across deploys.
+        try:
+            _db = await get_db()
+            pos_rows = await fetch_positions(_db)
+            n_restored = pipeline.ledger.restore_positions(pos_rows)
+            log.info(
+                "ledger.positions_restored",
+                count=n_restored,
+                cash_remaining=str(pipeline.ledger.cash),
+            )
+        except Exception as exc:
+            log.warning("ledger.restore_failed", error=str(exc)[:200])
+
+        try:
+            from poly_meridian.storage.writers import fetch_calibration_entries
+            _db = await get_db()
+            cal_rows = await fetch_calibration_entries(_db, limit=500)
+            cs = getattr(pipeline, "calibration_store", None)
+            if cs is not None:
+                n_cal = cs.restore(cal_rows)
+                log.info("calibration.restored", count=n_cal)
+        except Exception as exc:
+            log.warning("calibration.restore_failed", error=str(exc)[:200])
+
     tasks: list[asyncio.Task[None]] = [
         asyncio.create_task(_serve_api(settings.prometheus_port, broker), name="api"),
         asyncio.create_task(
@@ -1721,8 +1759,34 @@ async def run() -> None:
     # actual outcome) on every settled fundamentals trade so we can
     # compute Brier score + bucketed accuracy across the lifetime of
     # the bot. Surfaced on /api/state.calibration.
+    # Phase T — db_writer hook persists each settled prediction to
+    # calibration_entries so the metric survives Railway restarts.
     from poly_meridian.fundamentals.calibration import CalibrationStore
-    calibration_store = CalibrationStore(max_entries=500)
+
+    async def _persist_calibration(entry: Any) -> None:
+        if not db_ok:
+            return
+        try:
+            from poly_meridian.storage.writers import insert_calibration_entry
+            db = await get_db()
+            await insert_calibration_entry(
+                db,
+                ts_resolved=entry.ts_resolved,
+                token_id=entry.token_id,
+                entry_strategy=entry.entry_strategy,
+                claimed_p_long=entry.claimed_p_long,
+                confidence=entry.confidence,
+                settle_price=entry.settle_price,
+                won=entry.won,
+                pnl_usd=entry.pnl_usd,
+                base_rate=entry.base_rate,
+            )
+        except Exception as exc:
+            log.debug("calibration.persist_failed", error=str(exc)[:120])
+
+    calibration_store = CalibrationStore(
+        max_entries=500, db_writer=_persist_calibration,
+    )
     pipeline.calibration_store = calibration_store  # type: ignore[attr-defined]
 
     exit_monitor = ExitMonitor(

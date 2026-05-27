@@ -155,12 +155,50 @@ CREATE INDEX IF NOT EXISTS idx_orders_status ON our_orders(status, ts_created DE
 CREATE INDEX IF NOT EXISTS idx_orders_strategy ON our_orders(strategy, ts_created DESC);
 
 CREATE TABLE IF NOT EXISTS positions (
-    token_id        TEXT PRIMARY KEY,
-    qty             NUMERIC NOT NULL,
-    avg_cost        NUMERIC NOT NULL,
-    last_mark       NUMERIC NOT NULL,
-    last_updated    TIMESTAMPTZ NOT NULL
+    token_id           TEXT PRIMARY KEY,
+    qty                NUMERIC NOT NULL,
+    avg_cost           NUMERIC NOT NULL,
+    last_mark          NUMERIC NOT NULL,
+    last_updated       TIMESTAMPTZ NOT NULL,
+    -- Phase T — survive Railway restarts. Without these the bot
+    -- forgets why it entered each position, which makes the
+    -- hold-to-resolution thesis meaningless (no audit trail, no
+    -- calibration scoring, no exit decision context).
+    entry_strategy     TEXT,
+    horizon            TEXT,
+    fees_paid          NUMERIC DEFAULT 0,
+    realized_pnl       NUMERIC DEFAULT 0,
+    claimed_p_long     NUMERIC,
+    claimed_confidence NUMERIC,
+    claimed_base_rate  NUMERIC
 );
+
+-- Idempotent column adds for existing deployments where the table
+-- already exists from H.5 with the old schema. Postgres 9.6+
+-- supports IF NOT EXISTS on ADD COLUMN.
+ALTER TABLE positions ADD COLUMN IF NOT EXISTS entry_strategy     TEXT;
+ALTER TABLE positions ADD COLUMN IF NOT EXISTS horizon            TEXT;
+ALTER TABLE positions ADD COLUMN IF NOT EXISTS fees_paid          NUMERIC DEFAULT 0;
+ALTER TABLE positions ADD COLUMN IF NOT EXISTS realized_pnl       NUMERIC DEFAULT 0;
+ALTER TABLE positions ADD COLUMN IF NOT EXISTS claimed_p_long     NUMERIC;
+ALTER TABLE positions ADD COLUMN IF NOT EXISTS claimed_confidence NUMERIC;
+ALTER TABLE positions ADD COLUMN IF NOT EXISTS claimed_base_rate  NUMERIC;
+
+-- Phase T — calibration entries persisted across restarts.
+CREATE TABLE IF NOT EXISTS calibration_entries (
+    id                 BIGSERIAL PRIMARY KEY,
+    ts_resolved        TIMESTAMPTZ NOT NULL,
+    token_id           TEXT NOT NULL,
+    entry_strategy     TEXT,
+    claimed_p_long     NUMERIC NOT NULL,
+    confidence         NUMERIC NOT NULL,
+    settle_price       NUMERIC NOT NULL,
+    won                BOOLEAN NOT NULL,
+    pnl_usd            NUMERIC NOT NULL,
+    base_rate          NUMERIC
+);
+CREATE INDEX IF NOT EXISTS calibration_entries_ts_idx
+    ON calibration_entries (ts_resolved DESC);
 
 CREATE TABLE IF NOT EXISTS pnl_daily (
     date            DATE PRIMARY KEY,

@@ -223,3 +223,34 @@ class CalibrationStore:
 
     def __len__(self) -> int:
         return len(self._entries)
+
+    def restore(self, rows: list[dict[str, Any]]) -> int:
+        """Phase T — rebuild in-memory window from persisted DB rows on
+        boot. Each row corresponds to one settled prediction; we replay
+        the most recent N (newest first → oldest, then deque keeps
+        newest at the right side)."""
+        n = 0
+        # rows come newest-first; reverse so deque.maxlen drops the
+        # oldest if there are more rows than capacity.
+        for row in reversed(rows):
+            try:
+                ts = row.get("ts_resolved") or datetime.now(UTC)
+                entry = CalibrationEntry(
+                    ts_resolved=ts,
+                    token_id=str(row.get("token_id", "")),
+                    entry_strategy=row.get("entry_strategy"),
+                    claimed_p_long=float(row.get("claimed_p_long", 0.5)),
+                    confidence=float(row.get("confidence", 0.0)),
+                    settle_price=float(row.get("settle_price", 0.0)),
+                    won=bool(row.get("won", False)),
+                    pnl_usd=float(row.get("pnl_usd", 0.0)),
+                    base_rate=(
+                        float(row["base_rate"])
+                        if row.get("base_rate") is not None else None
+                    ),
+                )
+                self._entries.append(entry)
+                n += 1
+            except Exception:
+                continue
+        return n

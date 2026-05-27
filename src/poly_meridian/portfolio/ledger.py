@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
+from typing import Any
 
 import structlog
 
@@ -178,6 +179,55 @@ class Ledger:
             return
         pos.last_mark = mid_price
         pos.last_updated = ts or datetime.now(UTC)
+
+    def restore_positions(self, rows: list[dict[str, Any]]) -> int:
+        """Phase T — rebuild PositionState from persisted DB rows on boot.
+
+        Each row carries the full Phase R metadata (entry_strategy,
+        horizon, fees_paid, claimed_p_long/confidence/base_rate) so a
+        Railway restart preserves the audit trail and hold-to-resolution
+        contract. Returns the number of positions restored.
+
+        We deliberately do NOT replay individual ledger entries — that
+        would be slow and risk re-applying fees. The persisted positions
+        table is the source of truth for state at restart; ledger entries
+        are the audit log.
+
+        Cash is NOT restored here — it's computed from current ledger
+        starting_cash minus net notional carried in the restored positions.
+        """
+        restored = 0
+        for row in rows:
+            try:
+                qty = Decimal(str(row.get("qty", 0)))
+                if qty == 0:
+                    continue
+                token_id = str(row["token_id"])
+                avg_cost = Decimal(str(row.get("avg_cost", 0)))
+                last_mark = Decimal(str(row.get("last_mark", 0)))
+                last_updated = row.get("last_updated") or datetime.now(UTC)
+                pos = PositionState(
+                    token_id=token_id,
+                    qty=qty,
+                    avg_cost=avg_cost,
+                    realized_pnl=Decimal(str(row.get("realized_pnl") or 0)),
+                    last_mark=last_mark,
+                    last_updated=last_updated,
+                    fees_paid=Decimal(str(row.get("fees_paid") or 0)),
+                    entry_strategy=row.get("entry_strategy"),
+                    horizon=row.get("horizon"),
+                    claimed_p_long=row.get("claimed_p_long"),
+                    claimed_confidence=row.get("claimed_confidence"),
+                    claimed_base_rate=row.get("claimed_base_rate"),
+                )
+                self._positions[token_id] = pos
+                # Reduce cash by the cost of acquiring this position so
+                # the restored bankroll reflects what's actually deployed.
+                self._cash -= qty * avg_cost
+                restored += 1
+            except Exception:
+                continue
+        return restored
 
 
 def has_realized_pnl(order: Order) -> bool:

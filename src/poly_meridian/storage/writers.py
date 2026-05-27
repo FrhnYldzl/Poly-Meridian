@@ -402,10 +402,21 @@ async def upsert_position(
     avg_cost: Decimal,
     last_mark: Decimal,
     last_updated: datetime,
+    entry_strategy: str | None = None,
+    horizon: str | None = None,
+    fees_paid: Decimal | None = None,
+    realized_pnl: Decimal | None = None,
+    claimed_p_long: float | None = None,
+    claimed_confidence: float | None = None,
+    claimed_base_rate: float | None = None,
 ) -> None:
     """Mirror a single position to the `positions` table. Called on every
     apply_fill + mark cycle in the ledger. Deletes the row when qty == 0
-    so the table only carries open positions."""
+    so the table only carries open positions.
+
+    Phase T — also persists entry metadata (strategy, horizon, LLM
+    claims, fees, realized PnL) so a restart can rebuild the full
+    Position object, not just the qty/avg_cost shell."""
     async with db.acquire() as conn:
         if qty == 0:
             await conn.execute(
@@ -414,20 +425,42 @@ async def upsert_position(
             return
         await conn.execute(
             """
-            INSERT INTO positions (token_id, qty, avg_cost, last_mark, last_updated)
-            VALUES ($1,$2,$3,$4,$5)
+            INSERT INTO positions (
+                token_id, qty, avg_cost, last_mark, last_updated,
+                entry_strategy, horizon, fees_paid, realized_pnl,
+                claimed_p_long, claimed_confidence, claimed_base_rate
+            )
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
             ON CONFLICT (token_id) DO UPDATE SET
-                qty          = EXCLUDED.qty,
-                avg_cost     = EXCLUDED.avg_cost,
-                last_mark    = EXCLUDED.last_mark,
-                last_updated = EXCLUDED.last_updated
+                qty                = EXCLUDED.qty,
+                avg_cost           = EXCLUDED.avg_cost,
+                last_mark          = EXCLUDED.last_mark,
+                last_updated       = EXCLUDED.last_updated,
+                -- Don't overwrite entry metadata once set — first BUY
+                -- stamps it, subsequent updates leave it alone.
+                entry_strategy     = COALESCE(positions.entry_strategy, EXCLUDED.entry_strategy),
+                horizon            = COALESCE(positions.horizon, EXCLUDED.horizon),
+                fees_paid          = EXCLUDED.fees_paid,
+                realized_pnl       = EXCLUDED.realized_pnl,
+                claimed_p_long     = COALESCE(positions.claimed_p_long, EXCLUDED.claimed_p_long),
+                claimed_confidence = COALESCE(positions.claimed_confidence, EXCLUDED.claimed_confidence),
+                claimed_base_rate  = COALESCE(positions.claimed_base_rate, EXCLUDED.claimed_base_rate)
             """,
             token_id, qty, avg_cost, last_mark, last_updated,
+            entry_strategy, horizon,
+            fees_paid if fees_paid is not None else Decimal(0),
+            realized_pnl if realized_pnl is not None else Decimal(0),
+            Decimal(str(claimed_p_long)) if claimed_p_long is not None else None,
+            Decimal(str(claimed_confidence)) if claimed_confidence is not None else None,
+            Decimal(str(claimed_base_rate)) if claimed_base_rate is not None else None,
         )
 
 
 async def fetch_positions(db: Database) -> list[dict[str, Any]]:
-    """Restore positions on agent boot — used by ledger replay."""
+    """Restore positions on agent boot — used by ledger replay.
+
+    Phase T — also returns entry metadata so Ledger.restore_positions
+    can rebuild PositionState fields populated by Phase R.4 / R.8."""
     async with db.acquire() as conn:
         rows = await conn.fetch(
             """
@@ -435,9 +468,71 @@ async def fetch_positions(db: Database) -> list[dict[str, Any]]:
                    qty::float8 AS qty,
                    avg_cost::float8 AS avg_cost,
                    last_mark::float8 AS last_mark,
-                   last_updated
+                   last_updated,
+                   entry_strategy,
+                   horizon,
+                   fees_paid::float8 AS fees_paid,
+                   realized_pnl::float8 AS realized_pnl,
+                   claimed_p_long::float8 AS claimed_p_long,
+                   claimed_confidence::float8 AS claimed_confidence,
+                   claimed_base_rate::float8 AS claimed_base_rate
             FROM positions
             """
+        )
+        return [dict(r) for r in rows]
+
+
+async def insert_calibration_entry(
+    db: Database,
+    *,
+    ts_resolved: datetime,
+    token_id: str,
+    entry_strategy: str | None,
+    claimed_p_long: float,
+    confidence: float,
+    settle_price: float,
+    won: bool,
+    pnl_usd: float,
+    base_rate: float | None = None,
+) -> None:
+    """Phase T — persist a settled prediction so Brier history survives
+    restarts. Called by CalibrationStore.record via the db_writer hook."""
+    async with db.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO calibration_entries (
+                ts_resolved, token_id, entry_strategy,
+                claimed_p_long, confidence, settle_price,
+                won, pnl_usd, base_rate
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+            """,
+            ts_resolved, token_id, entry_strategy,
+            Decimal(str(claimed_p_long)), Decimal(str(confidence)),
+            Decimal(str(settle_price)), won, Decimal(str(pnl_usd)),
+            Decimal(str(base_rate)) if base_rate is not None else None,
+        )
+
+
+async def fetch_calibration_entries(
+    db: Database, *, limit: int = 500
+) -> list[dict[str, Any]]:
+    """Restore the last N calibration entries on boot so Brier metrics
+    don't reset to zero with every Railway redeploy."""
+    async with db.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT ts_resolved, token_id, entry_strategy,
+                   claimed_p_long::float8 AS claimed_p_long,
+                   confidence::float8     AS confidence,
+                   settle_price::float8   AS settle_price,
+                   won,
+                   pnl_usd::float8        AS pnl_usd,
+                   base_rate::float8      AS base_rate
+            FROM calibration_entries
+            ORDER BY ts_resolved DESC
+            LIMIT $1
+            """,
+            int(limit),
         )
         return [dict(r) for r in rows]
 
