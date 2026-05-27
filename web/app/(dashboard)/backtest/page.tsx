@@ -1,10 +1,37 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { PageHeader } from "@/components/page-header";
 import { Panel } from "@/components/panel";
 import { EquityChart } from "@/components/equity-chart";
 import { cn, formatUsd } from "@/lib/utils";
+
+// Phase S.1 — LLM calibration backtest result shape
+interface LLMCalibrationResult {
+  started_at?: string;
+  finished_at?: string;
+  n_markets_attempted?: number;
+  n_markets_scored?: number;
+  n_skipped_voided?: number;
+  n_skipped_no_estimate?: number;
+  brier_score?: number | null;
+  accuracy?: number | null;
+  mean_confidence?: number | null;
+  mean_p_long?: number | null;
+  cost_usd_estimate?: number;
+  bucket_accuracy?: Record<string, number | null>;
+  bucket_counts?: Record<string, number>;
+  sample_predictions?: Array<{
+    question: string;
+    category?: string;
+    claimed_p_long: number;
+    confidence: number;
+    won: boolean;
+    rationale: string;
+  }>;
+  never_run?: boolean;
+  error?: string;
+}
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "";
 
@@ -49,6 +76,49 @@ export default function BacktestPage() {
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState<BacktestResult | null>(null);
   const [err, setErr] = useState<string | null>(null);
+
+  // Phase S.1 — LLM calibration backtest state
+  const [llmN, setLlmN] = useState(30);
+  const [llmRunning, setLlmRunning] = useState(false);
+  const [llmResult, setLlmResult] = useState<LLMCalibrationResult | null>(null);
+  const [llmErr, setLlmErr] = useState<string | null>(null);
+
+  // Load cached previous LLM backtest on mount
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await fetch(`${API}/api/backtest/llm-calibration/last`);
+        const j = (await r.json()) as LLMCalibrationResult;
+        if (!cancelled && !j.never_run) setLlmResult(j);
+      } catch {
+        /* ignore */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const onRunLLM = async () => {
+    setLlmRunning(true);
+    setLlmErr(null);
+    try {
+      const params = new URLSearchParams({ n_markets: String(llmN) });
+      const r = await fetch(
+        `${API}/api/backtest/llm-calibration?${params}`,
+        { method: "POST" },
+      );
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const j = (await r.json()) as LLMCalibrationResult;
+      if (j.error) setLlmErr(j.error);
+      else setLlmResult(j);
+    } catch (e) {
+      setLlmErr(String(e));
+    } finally {
+      setLlmRunning(false);
+    }
+  };
 
   const onRun = async () => {
     setRunning(true);
@@ -144,6 +214,186 @@ export default function BacktestPage() {
           {err}
         </div>
       )}
+
+      {/* Phase S.1 — LLM Calibration backtest. Validates Claude's forecast
+          skill on past resolved Polymarket markets BEFORE we trust live
+          capital. Cheap (~$0.02 per 50-market run). The Brier score and
+          per-bucket accuracy are the actual scientific proof that this
+          system has edge. */}
+      <div className="border-b border-terminal-border bg-terminal-surfaceAlt/20 p-3">
+        <div className="mb-2 flex items-baseline justify-between">
+          <div>
+            <div className="font-mono text-[13px] font-semibold uppercase tracking-wider text-terminal-green">
+              LLM Calibration Backtest
+            </div>
+            <div className="font-mono text-[10px] text-terminal-dim">
+              Score Claude on past resolved markets — Brier &lt; 0.20 ≈ informed,
+              0.25 ≈ coin-flip, &gt; 0.30 ≈ worse than chance
+            </div>
+          </div>
+          <div className="flex items-end gap-2">
+            <Input
+              label="Markets"
+              value={llmN}
+              onChange={(v) =>
+                setLlmN(Math.max(5, Math.min(200, parseInt(v) || 30)))
+              }
+            />
+            <button
+              type="button"
+              onClick={onRunLLM}
+              disabled={llmRunning}
+              className={cn(
+                "h-[34px] rounded border px-3 font-mono text-[12px] uppercase tracking-wider transition-colors",
+                llmRunning
+                  ? "border-terminal-dim bg-terminal-bg text-terminal-dim"
+                  : "border-terminal-green/60 bg-terminal-green/10 text-terminal-green hover:bg-terminal-green/20",
+              )}
+            >
+              {llmRunning ? "Querying Claude…" : "▶ Validate LLM"}
+            </button>
+          </div>
+        </div>
+
+        {llmErr && (
+          <div className="my-2 rounded border border-terminal-red/40 bg-terminal-red/10 px-3 py-2 font-mono text-[11px] text-terminal-red">
+            {llmErr}
+          </div>
+        )}
+
+        {llmResult && llmResult.n_markets_scored !== undefined && llmResult.n_markets_scored > 0 && (
+          <div className="grid grid-cols-2 gap-2 md:grid-cols-5">
+            <StatTile
+              label="Brier score"
+              value={
+                llmResult.brier_score != null
+                  ? llmResult.brier_score.toFixed(4)
+                  : "—"
+              }
+              tone={
+                llmResult.brier_score == null
+                  ? "text-terminal-dim"
+                  : llmResult.brier_score < 0.20
+                    ? "text-terminal-green"
+                    : llmResult.brier_score < 0.25
+                      ? "text-terminal-amber"
+                      : "text-terminal-red"
+              }
+              sub={
+                llmResult.brier_score != null && llmResult.brier_score < 0.20
+                  ? "informed"
+                  : llmResult.brier_score != null && llmResult.brier_score < 0.25
+                    ? "weak signal"
+                    : "no skill"
+              }
+            />
+            <StatTile
+              label="Accuracy"
+              value={
+                llmResult.accuracy != null
+                  ? `${(llmResult.accuracy * 100).toFixed(1)}%`
+                  : "—"
+              }
+              sub={`${llmResult.n_markets_scored}/${llmResult.n_markets_attempted} scored`}
+            />
+            <StatTile
+              label="Mean confidence"
+              value={
+                llmResult.mean_confidence != null
+                  ? `${(llmResult.mean_confidence * 100).toFixed(1)}%`
+                  : "—"
+              }
+              sub={
+                llmResult.mean_confidence != null && llmResult.accuracy != null
+                  ? `${(llmResult.accuracy * 100).toFixed(0)}% realized`
+                  : ""
+              }
+            />
+            <StatTile
+              label="Mean p_long"
+              value={
+                llmResult.mean_p_long != null
+                  ? llmResult.mean_p_long.toFixed(3)
+                  : "—"
+              }
+              sub="bet-side prob"
+            />
+            <StatTile
+              label="Cost"
+              value={`$${(llmResult.cost_usd_estimate ?? 0).toFixed(4)}`}
+              sub={`${llmResult.n_skipped_no_estimate ?? 0} no-est, ${llmResult.n_skipped_voided ?? 0} void`}
+            />
+          </div>
+        )}
+
+        {/* Per-bucket calibration table */}
+        {llmResult?.bucket_counts && Object.keys(llmResult.bucket_counts).length > 0 && (
+          <div className="mt-2 grid grid-cols-5 gap-1.5 font-mono text-[10px]">
+            {Object.entries(llmResult.bucket_counts).map(([bucket, n]) => {
+              const acc = llmResult.bucket_accuracy?.[bucket];
+              const expected = parseFloat(bucket.split("-")[0]) + 0.05;
+              const gap =
+                acc != null ? Math.abs(acc - expected) : null;
+              const tone =
+                gap == null
+                  ? "text-terminal-dim"
+                  : gap < 0.05
+                    ? "text-terminal-green"
+                    : gap < 0.15
+                      ? "text-terminal-amber"
+                      : "text-terminal-red";
+              return (
+                <div
+                  key={bucket}
+                  className="rounded border border-terminal-border bg-terminal-bg px-1.5 py-1"
+                >
+                  <div className="text-terminal-dim">{bucket}</div>
+                  <div className={cn("numeric", tone)}>
+                    {acc != null ? `${(acc * 100).toFixed(0)}% (n=${n})` : `n=${n}`}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {/* Sample predictions — operator can see what Claude actually said */}
+        {llmResult?.sample_predictions && llmResult.sample_predictions.length > 0 && (
+          <details className="mt-2">
+            <summary className="cursor-pointer font-mono text-[10px] uppercase tracking-wider text-terminal-dim hover:text-terminal-text">
+              ▶ Sample predictions ({llmResult.sample_predictions.length} of {llmResult.n_markets_scored})
+            </summary>
+            <ul className="mt-1 max-h-[300px] divide-y divide-terminal-border/40 overflow-auto rounded border border-terminal-border bg-terminal-bg font-mono text-[10px]">
+              {llmResult.sample_predictions.map((p, i) => (
+                <li
+                  key={i}
+                  className={cn(
+                    "px-2 py-1.5",
+                    p.won ? "border-l-2 border-terminal-green" : "border-l-2 border-terminal-red",
+                  )}
+                >
+                  <div className="flex items-baseline justify-between gap-2">
+                    <span className="truncate text-terminal-text">{p.question}</span>
+                    <span
+                      className={cn(
+                        "numeric whitespace-nowrap",
+                        p.won ? "text-terminal-green" : "text-terminal-red",
+                      )}
+                    >
+                      p={p.claimed_p_long.toFixed(2)} {p.won ? "✓" : "✗"}
+                    </span>
+                  </div>
+                  {p.rationale && (
+                    <div className="mt-0.5 truncate text-terminal-dim">
+                      Claude: {p.rationale}
+                    </div>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </details>
+        )}
+      </div>
 
       {/* Results */}
       <div className="grid min-h-0 flex-1 grid-cols-1 gap-2 overflow-auto p-2 lg:grid-cols-12">

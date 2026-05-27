@@ -301,6 +301,43 @@ def build_app(broker: AgentStateBroker) -> FastAPI:
             **result.asdict(),
         }
 
+    # Phase S.1 — LLM calibration backtest. Validates Claude's forecast
+    # skill on past resolved markets BEFORE live trading scales. Cheap
+    # (<$0.05 per run) but proves whether the LLM thesis holds water.
+    # Cached in memory so the UI can re-fetch the last run without
+    # spending tokens.
+    _llm_backtest_cache: dict[str, Any] = {}
+
+    @app.post("/api/backtest/llm-calibration")
+    async def run_llm_calibration_backtest(
+        n_markets: int = 50,
+    ) -> dict[str, Any]:
+        """Score LLMResolver against historical resolved markets.
+
+        Returns Brier score, accuracy, bucketed calibration, and a
+        sample of per-market predictions so the operator can see HOW
+        the LLM reasons (not just an aggregate number).
+
+        Bounded at 200 markets per call to cap cost — a 50-market run
+        is ~$0.02 and finishes in ~30 seconds.
+        """
+        from poly_meridian.backtest.llm_calibration import LLMCalibrationRunner
+        n = max(5, min(200, int(n_markets)))
+        runner = LLMCalibrationRunner()
+        try:
+            summary, _store = await runner.run(n_markets=n)
+        except Exception as exc:
+            return {"error": str(exc)[:300], "n_markets_requested": n}
+        out = summary.as_dict()
+        _llm_backtest_cache["last_run"] = out
+        return out
+
+    @app.get("/api/backtest/llm-calibration/last")
+    async def get_last_llm_backtest() -> dict[str, Any]:
+        """Return the most recent LLM-calibration backtest summary
+        (cached in memory). Empty when no run has been triggered yet."""
+        return _llm_backtest_cache.get("last_run") or {"never_run": True}
+
     @app.get("/api/settings")
     async def settings_info() -> dict[str, Any]:
         s = get_settings()
