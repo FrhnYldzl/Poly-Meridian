@@ -63,6 +63,8 @@ class SignalAggregator:
         *,
         conflict_threshold: float = 0.05,
         max_size_pct_per_position: float = 0.05,
+        consensus_boost: float = 0.15,
+        cross_strategy_disagreement_blocks: bool = True,
     ) -> None:
         # Lowered from 0.10 — at the original threshold solo strategy signals
         # with conviction in the 0.05–0.10 band (common from STAT_QUANT
@@ -71,6 +73,19 @@ class SignalAggregator:
         # ties while letting borderline solo signals through.
         self.conflict_threshold = conflict_threshold
         self.max_size_pct = max_size_pct_per_position
+        # Phase S.2 — when 2+ DISTINCT base strategies (fundamentals/
+        # arbitrage/sentiment/smart_money/stat_quant — not sub-variants
+        # of stat_quant) agree on direction, boost the aggregate conviction
+        # by this fraction (additive, capped at 1.0). 3 strategies = 2×
+        # the boost. Caps adoption of consensus signals without over-
+        # weighting a single noisy strategy.
+        self.consensus_boost = consensus_boost
+        # Phase S.2 — when DISTINCT base strategies fire OPPOSITE directions
+        # on the same market, this is information conflict and the trade
+        # should be SKIPPED entirely (one of them is wrong; we don't know
+        # which). Without this guard the conviction-weighted vote could
+        # pick the wrong side. Default on.
+        self.cross_disagreement_blocks = cross_strategy_disagreement_blocks
 
     def aggregate(
         self,
@@ -89,6 +104,10 @@ class SignalAggregator:
         prices: list[Decimal] = []
         size_pcts: list[float] = []
         contributors: list[str] = []
+        # Phase S.2 — track DISTINCT base strategies (not sub-variants)
+        # per direction so we can detect cross-strategy consensus AND
+        # cross-strategy disagreement.
+        bases_per_direction: dict[Action, set[str]] = defaultdict(set)
 
         condition_id = sigs[0].condition_id
 
@@ -102,6 +121,8 @@ class SignalAggregator:
             edge_sum[s.suggested_action] += s.conviction * s.edge
             contributors.append(s.strategy)
             direction_token.setdefault(s.suggested_action, s.token_id)
+            base = s.strategy.split(".", 1)[0]
+            bases_per_direction[s.suggested_action].add(base)
 
             price_helper = _resolve_helper(s.strategy, _PRICE_HELPERS)
             size_helper = _resolve_helper(s.strategy, _SIZE_HELPERS)
@@ -112,6 +133,28 @@ class SignalAggregator:
 
         if not score:
             return None
+
+        # Phase S.2 — cross-strategy disagreement check. If two DISTINCT
+        # base strategies fire on OPPOSITE directions, we have an
+        # information conflict — block the trade entirely. The within-
+        # strategy conflict_threshold below is a secondary guard for
+        # conviction ties, but distinct-base-strategy disagreement is a
+        # binary block.
+        if self.cross_disagreement_blocks:
+            distinct_bases_all = {b for bases in bases_per_direction.values() for b in bases}
+            buy_yes_bases = bases_per_direction.get(Action.BUY_YES, set())
+            buy_no_bases = bases_per_direction.get(Action.BUY_NO, set())
+            if buy_yes_bases and buy_no_bases:
+                log.info(
+                    "aggregator.cross_strategy_disagreement",
+                    yes_bases=sorted(buy_yes_bases),
+                    no_bases=sorted(buy_no_bases),
+                )
+                from poly_meridian.pipeline import PM_STRATEGY_REJECT
+                PM_STRATEGY_REJECT.labels(
+                    strategy="aggregator", reason="cross_strategy_disagreement"
+                ).inc()
+                return None
 
         ranked = sorted(score.items(), key=lambda kv: kv[1], reverse=True)
         direction, top = ranked[0]
@@ -129,6 +172,22 @@ class SignalAggregator:
         w = weight[direction]
         edge = edge_sum[direction] / w if w > 0 else 0.0
         conviction = min(1.0, top)
+
+        # Phase S.2 — multi-strategy consensus boost. Each additional
+        # DISTINCT base strategy beyond the first adds `consensus_boost`
+        # to the conviction (capped at 1.0). Two strategies agreeing is
+        # markedly more reliable than one; three is gold.
+        n_distinct_winners = len(bases_per_direction.get(direction, set()))
+        if n_distinct_winners >= 2:
+            conviction = min(
+                1.0, conviction + (n_distinct_winners - 1) * self.consensus_boost
+            )
+            log.info(
+                "aggregator.consensus_boost",
+                n_strategies=n_distinct_winners,
+                bases=sorted(bases_per_direction[direction]),
+                final_conviction=round(conviction, 4),
+            )
         proposed_price = max(prices) if prices else None
         size_pct = min(self.max_size_pct, sum(size_pcts)) if size_pcts else 0.0
 

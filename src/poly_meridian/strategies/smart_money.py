@@ -71,7 +71,12 @@ class SmartMoneyStrategy(BaseStrategy):
     """
 
     def __init__(self, config: dict[str, Any]) -> None:
-        super().__init__(name="smart_money", config=config, enabled=config.get("enabled", False))
+        # Phase S.2 — enable by default. The on-chain feed (Phase I.1) is
+        # wired; default tier3_auto_trade=False keeps observation-only
+        # mode on for tier 3 wallets while tier 1/2 cluster signals can
+        # fire. Concentration + spread + cross-strategy guards prevent
+        # bad SmartMoney signals from causing losses.
+        super().__init__(name="smart_money", config=config, enabled=config.get("enabled", True))
         self.tier1_min_cluster = int(config.get("tier1_min_cluster", 3))
         self.tier2_min_cluster = int(config.get("tier2_min_cluster", 2))
         self.tier3_auto_trade = bool(config.get("tier3_auto_trade", False))
