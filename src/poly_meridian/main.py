@@ -473,6 +473,18 @@ async def _broker_refresh_loop(
             except Exception:
                 pass
 
+            # Phase R.6: LLM usage snapshot (Claude API spend, cache
+            # hit rate, deep-vs-triage mix). Reads from
+            # FundamentalsStrategy.llm_usage() which proxies the
+            # underlying LLMResolver.usage counter.
+            try:
+                if pipeline.fundamentals is not None and hasattr(
+                    pipeline.fundamentals, "llm_usage"
+                ):
+                    broker.snapshot.llm_usage = pipeline.fundamentals.llm_usage()
+            except Exception:
+                pass
+
             # Trade-flow funnel: strategy signals → aggregator → risk → orders.
             # Surfaces the drop-off so we can see WHY an order didn't fire
             # (aggregator conflict vs risk reject vs no signal at all).

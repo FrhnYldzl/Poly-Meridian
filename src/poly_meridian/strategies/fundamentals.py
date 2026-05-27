@@ -16,6 +16,7 @@ from poly_meridian.fundamentals import (
     CategoryResolver,
     CryptoResolver,
     FundamentalsContext,
+    LLMResolver,
     MacroResolver,
     PoliticsResolver,
     SportsResolver,
@@ -46,8 +47,12 @@ class FundamentalsStrategy(BaseStrategy):
         config: dict[str, Any],
         *,
         resolvers: dict[str, CategoryResolver] | None = None,
+        llm_resolver: LLMResolver | None = None,
     ) -> None:
-        super().__init__(name="fundamentals", config=config, enabled=config.get("enabled", False))
+        # Phase R.3: enable by default now that LLMResolver fills the
+        # previously-empty data path. Operator can still disable via
+        # config/strategies/fundamentals.yaml: { enabled: false }.
+        super().__init__(name="fundamentals", config=config, enabled=config.get("enabled", True))
         self.min_edge = float(config.get("min_edge", 0.05))
         self.min_confidence = float(config.get("min_confidence", 0.5))
         self.max_size_pct = float(config.get("max_size_pct", 0.025))
@@ -68,17 +73,58 @@ class FundamentalsStrategy(BaseStrategy):
                 "Crypto": CryptoResolver(),
                 "Macro": MacroResolver(),
             }
-        # Fallback: when the category-specific resolver returns None (no
-        # external data yet — polls/Elo/funding etc.) the DefaultResolver
-        # produces a weak-but-real signal from book + time + liquidity so
-        # Fundamentals actually contributes instead of silently skipping.
+        # Legacy DefaultResolver (Phase N.7 disabled it). Kept around as
+        # a no-op fallback for code paths that still reference it.
         self._default_resolver = DefaultResolver()
+
+        # Phase R — LLMResolver becomes the *real* universal fallback.
+        # Whenever a category-specific resolver returns None (which is
+        # nearly always today since poll / Elo / funding feeds aren't
+        # wired), the LLM gets the question + GDELT news summary +
+        # smart-money flow direction and returns its own probability.
+        # When ANTHROPIC_API_KEY is missing the resolver simply returns
+        # None, and FundamentalsStrategy bails the same way as before.
+        try:
+            from poly_meridian.settings import get_settings
+            settings = get_settings()
+            self._llm_enabled = bool(
+                getattr(settings, "llm_resolver_enabled", True)
+                and settings.anthropic_api_key.get_secret_value()
+            )
+        except Exception:
+            self._llm_enabled = False
+        self._llm_resolver = llm_resolver if llm_resolver is not None else (
+            LLMResolver() if self._llm_enabled else None
+        )
 
         self._books: dict[str, LocalBook] = {}
         self._context = FundamentalsContext()
+        # Phase R.5 — per-market news summary + smart-money flow cache.
+        # Pipeline pushes these via attach_news_summary / attach_smart_money
+        # so the LLM resolver reads fresh context per condition.
+        self._news_summaries: dict[str, str] = {}
+        self._sm_directions: dict[str, str] = {}
 
     def attach_book(self, token_id: str, book: LocalBook) -> None:
         self._books[token_id] = book
+
+    def attach_news_summary(self, condition_id: str, summary: str) -> None:
+        """Pipeline pushes a 1-3 sentence news digest per condition."""
+        if summary:
+            self._news_summaries[condition_id] = summary[:600]
+
+    def attach_smart_money(self, condition_id: str, direction: str) -> None:
+        """Pipeline pushes 'YES'/'NO'/'NEUTRAL' direction per condition."""
+        if direction:
+            self._sm_directions[condition_id] = direction
+
+    def llm_usage(self) -> dict[str, Any]:
+        """Surface LLMResolver counters for /api/state."""
+        if self._llm_resolver is None:
+            return {"llm_enabled": False}
+        u = self._llm_resolver.get_usage()
+        u["llm_enabled"] = True
+        return u
 
     def update_context(self, **kwargs: Any) -> None:
         """Patch context fields. Caller owns merge semantics."""
@@ -100,6 +146,22 @@ class FundamentalsStrategy(BaseStrategy):
         # Refresh the context's `now` so resolvers see consistent time.
         self._context.now = datetime.now(UTC)
 
+        # Phase R — anchor LLM against the live book before each call.
+        # The LLMResolver reads ctx.current_market_p to decide whether
+        # a deep-dive (Sonnet) re-query is worth the cost.
+        yes_book = self._books.get(market.yes_token_id)
+        if yes_book is not None:
+            ask = yes_book.best_ask()
+            if ask is not None:
+                self._context.current_market_p = float(ask[0])
+
+        # Phase R.5 — push the latest per-market news + smart-money flow
+        # into the FundamentalsContext so LLM has structured inputs.
+        self._context.news_summary = self._news_summaries.get(market.condition_id)
+        self._context.smart_money_direction = self._sm_directions.get(
+            market.condition_id
+        )
+
         est = None
         if resolver is not None and (
             category in self._enabled_categories or category == "Uncategorized"
@@ -114,18 +176,22 @@ class FundamentalsStrategy(BaseStrategy):
                     error=str(exc),
                 )
 
-        # Fallback to the default resolver when category-specific returned
-        # None — most common case today since external data feeds (polls,
-        # Elo, funding rates) aren't wired yet.
-        if est is None:
+        # Phase R — LLM fallback. Category-specific resolvers return None
+        # today (no poll/Elo/funding feeds), so this is the path that
+        # actually fires. resolve_async returns a calibrated p_yes from
+        # Claude using question text + recent news + smart-money flow.
+        # When ANTHROPIC_API_KEY is missing or budget is exhausted, the
+        # resolver returns None and the strategy bails silently.
+        if est is None and self._llm_resolver is not None:
             try:
-                est = self._default_resolver.resolve(market, self._context)
+                est = await self._llm_resolver.resolve_async(market, self._context)
             except Exception as exc:
                 log.warning(
-                    "fundamentals.default_resolver_error",
+                    "fundamentals.llm_resolver_error",
                     condition_id=market.condition_id,
-                    error=str(exc),
+                    error=str(exc)[:200],
                 )
+
         if est is None:
             from poly_meridian.pipeline import PM_STRATEGY_REJECT
             PM_STRATEGY_REJECT.labels(strategy="fundamentals", reason="resolver_none").inc()

@@ -153,10 +153,42 @@ class Pipeline:
     def attach_news_signals(self, condition_id: str, signals: list[dict[str, Any]]) -> None:
         if self.sentiment is not None:
             self.sentiment.attach_recent_signals(condition_id, signals)
+        # Phase R.5 — also feed the LLMResolver a compact news summary
+        # so Claude can reason about *why* the market is moving rather
+        # than reading from scratch.
+        if self.fundamentals is not None and signals:
+            try:
+                # Build a tight 2-3 sentence summary from the most-impactful
+                # signals (sorted desc by impact). Keep ≤400 chars so we
+                # don't blow the LLM prompt budget.
+                top = sorted(signals, key=lambda r: r.get("impact", 0.0), reverse=True)[:3]
+                lines = []
+                for r in top:
+                    title = (r.get("article_title") or "")[:120]
+                    rationale = (r.get("rationale") or "")[:120]
+                    direction = r.get("direction") or "?"
+                    lines.append(f"[{direction}] {title} — {rationale}")
+                summary = " | ".join(lines)
+                self.fundamentals.attach_news_summary(condition_id, summary)
+            except Exception:
+                pass
 
     def attach_cluster_state(self, state: Any) -> None:
         if self.smart_money is not None:
             self.smart_money.attach_cluster_state(state)
+        # Phase R.5 — push aggregated direction per condition into the LLM
+        # context so Claude can read "smart money leaning YES on X" as a
+        # structured signal. cluster_state is expected to expose
+        # `per_condition: dict[condition_id, ClusterSummary]` or similar.
+        if self.fundamentals is not None and state is not None:
+            try:
+                per_cond = getattr(state, "per_condition", None) or {}
+                for cid, summary in per_cond.items():
+                    direction = getattr(summary, "direction", None)
+                    if direction:
+                        self.fundamentals.attach_smart_money(cid, str(direction))
+            except Exception:
+                pass
 
     async def tick(self, market: Market) -> Order | None:
         """One pass through the full pipeline for a single market."""

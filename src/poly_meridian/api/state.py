@@ -97,6 +97,9 @@ class Snapshot:
     # the dominant bucket, WS dispatch is missing one side OR bootstrap
     # didn't fill it. Bypasses strategy-level proxies for direct visibility.
     book_health: dict[str, int] = field(default_factory=dict)
+    # Phase R — LLMResolver usage counters. Tracks Claude API spend,
+    # cache hit rate, deep-vs-triage call mix. None when LLM is disabled.
+    llm_usage: dict[str, Any] = field(default_factory=dict)
     # Slippage drift monitor (Phase K). None when < 10 fills observed yet.
     slippage_summary: dict[str, Any] = field(default_factory=dict)
 
@@ -145,6 +148,7 @@ class Snapshot:
             "last_refresh_error": self.last_refresh_error,
             "strategy_rejects": self.strategy_rejects,
             "book_health": self.book_health,
+            "llm_usage": self.llm_usage,
             "slippage_summary": self.slippage_summary,
         }
 

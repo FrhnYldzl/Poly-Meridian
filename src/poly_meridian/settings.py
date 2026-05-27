@@ -66,6 +66,28 @@ class Settings(BaseSettings):
     sentiment_batch_size: int = 10
     sentiment_window_sec: int = 1800
 
+    # Phase R — LLM-driven probability resolver.
+    # Two-tier model selection: cheap Haiku for triage on every market
+    # we look at, expensive Sonnet only when triage finds a >0.10 edge.
+    # Both models can be swapped per env var without code change.
+    llm_resolver_enabled: bool = True
+    llm_resolver_triage_model: str = "claude-haiku-4-5-20251001"
+    llm_resolver_deep_model: str = "claude-sonnet-4-5-20251001"
+    # Triage edge threshold (|p_yes - market_p|) that triggers a deep
+    # re-evaluation with the more expensive model. Below this the
+    # triage estimate is used directly.
+    llm_resolver_deep_edge: float = 0.10
+    # Cache TTL — how long to trust a probability estimate before
+    # re-querying. 6 hours = 4 calls/day per market.
+    llm_resolver_cache_ttl_sec: int = 6 * 3600
+    # Daily token-spend ceiling (USD). Hard-stop when exceeded — no
+    # more LLM calls until midnight UTC. Override per environment.
+    llm_resolver_daily_budget_usd: float = 2.0
+    # Per-call max_tokens for triage / deep — Sonnet costs ~3x more
+    # so we keep its budget tighter.
+    llm_resolver_triage_max_tokens: int = 400
+    llm_resolver_deep_max_tokens: int = 800
+
     # --- Storage ---
     postgres_url: str = "postgresql+asyncpg://poly:polypass@db:5432/poly_meridian"
     redis_url: str = "redis://redis:6379/0"

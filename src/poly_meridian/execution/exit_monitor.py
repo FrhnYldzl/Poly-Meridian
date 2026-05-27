@@ -156,16 +156,30 @@ class ExitMonitor:
         end_date: datetime | None,
         now: datetime,
     ) -> tuple[str | None, float]:
-        """Apply the three triggers in order. Returns (reason, mtm_pct)."""
+        """Apply the three triggers in order. Returns (reason, mtm_pct).
+
+        Phase R.4 — when the entry was Fundamentals (LLM-driven) the
+        thesis is "hold to binary settle." We skip profit_take and
+        stop_loss because:
+          - the LLM picked p_yes ≠ market_p based on evidence, not noise
+          - intermediate price swings are just spread + book churn,
+            not new information that invalidates the thesis
+          - exit slippage on Polymarket is ~50-100 bps; flipping in-out
+            burns the edge.
+        time_decay (closing before resolution chaos) still fires — the
+        agent should be flat before the binary settlement event.
+        """
         if pos.avg_cost <= 0:
             return None, 0.0
 
         mtm_pct = float((pos.last_mark - pos.avg_cost) / pos.avg_cost)
+        hold_to_resolution = (pos.horizon == "to_resolution")
 
-        if mtm_pct >= self.profit_take_pct:
-            return "profit_take", mtm_pct
-        if mtm_pct <= -self.stop_loss_pct:
-            return "stop_loss", mtm_pct
+        if not hold_to_resolution:
+            if mtm_pct >= self.profit_take_pct:
+                return "profit_take", mtm_pct
+            if mtm_pct <= -self.stop_loss_pct:
+                return "stop_loss", mtm_pct
 
         if end_date is not None:
             hours_left = (end_date - now).total_seconds() / 3600.0

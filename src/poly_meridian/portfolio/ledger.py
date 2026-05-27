@@ -42,6 +42,13 @@ class PositionState:
     # Used to net realized P&L correctly on the sell side. Without this,
     # `realized_pnl` was gross-of-fees, inflating Sharpe ~2× per fee level.
     fees_paid: Decimal = Decimal(0)
+    # Phase R.4 — entry strategy name + horizon hint. Set on the first
+    # BUY fill (carried through subsequent BUYs since avg_cost is
+    # weighted-avg). ExitMonitor reads `horizon == "to_resolution"` to
+    # skip profit_take / stop_loss triggers for LLM-driven entries —
+    # those bets are evidence-driven and should ride to binary settle.
+    entry_strategy: str | None = None
+    horizon: str | None = None   # "intraday" | "to_resolution"
 
     def unrealized_pnl(self) -> Decimal:
         return self.qty * (self.last_mark - self.avg_cost)
@@ -98,6 +105,16 @@ class Ledger:
             pos.qty = new_qty
             # Track buy-side fees so the SELL leg can net them out (Phase N.6).
             pos.fees_paid += fee
+            # Phase R.4 — stamp entry strategy + horizon on FIRST buy.
+            # Subsequent BUYs (size topups) keep the original entry tag —
+            # the Q.3 concentration guard normally blocks these anyway.
+            if pos.entry_strategy is None:
+                pos.entry_strategy = order.strategy
+                pos.horizon = (
+                    "to_resolution"
+                    if (order.strategy or "").startswith("fundamentals")
+                    else "intraday"
+                )
         else:  # SELL — reduce position, realize PnL
             signed_qty = -filled_qty
             notional = (filled_qty * fill_price) - fee    # cash in

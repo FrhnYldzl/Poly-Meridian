@@ -56,6 +56,19 @@ class FundamentalsContext:
     # Common
     now: datetime | None = None
 
+    # Phase R — LLM resolver context. Populated by pipeline before each
+    # market evaluation so Claude has real-time situational input.
+    #   news_summary           — 1-3 sentence summary of last 24h news
+    #                            relevant to this condition (built by
+    #                            news_processor.aggregate_for_condition).
+    #   smart_money_direction  — "YES"/"NO"/"NEUTRAL" or None if Phase I.1
+    #                            cluster has nothing on this condition.
+    #   current_market_p       — book mid at evaluation time so LLM can
+    #                            anchor its estimate against the market.
+    news_summary: str | None = None
+    smart_money_direction: str | None = None
+    current_market_p: float | None = None
+
 
 class CategoryResolver(ABC):
     """One per category (Politics / Sports / Crypto / Macro)."""

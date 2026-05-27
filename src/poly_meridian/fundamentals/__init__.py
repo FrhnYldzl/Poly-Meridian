@@ -15,6 +15,7 @@ from poly_meridian.fundamentals.base import (
     ProbabilityEstimate,
 )
 from poly_meridian.fundamentals.crypto import CryptoResolver
+from poly_meridian.fundamentals.llm_resolver import LLMResolver
 from poly_meridian.fundamentals.macro import MacroResolver
 from poly_meridian.fundamentals.politics import PoliticsResolver
 from poly_meridian.fundamentals.sports import EloEngine, SportsResolver
@@ -24,6 +25,7 @@ __all__ = [
     "CryptoResolver",
     "EloEngine",
     "FundamentalsContext",
+    "LLMResolver",
     "MacroResolver",
     "PoliticsResolver",
     "ProbabilityEstimate",
