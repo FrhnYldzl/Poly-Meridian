@@ -37,13 +37,25 @@ class RiskLimits:
     # and per event (soft).
     max_positions_per_condition: int = 1   # YES OR NO on a condition, never both
     max_positions_per_event: int = 2       # related Polymarket markets share event_id
-    # Phase Q.6b — price floor/ceiling. At <$0.05 the bid-ask spread on
-    # Polymarket is routinely 30-50% of the contract price (e.g. Aramco
-    # YES at $0.002 with $0.003 ask = -33% lost on entry). At >$0.95 the
-    # remaining upside is <5% so risk-reward is asymmetric the wrong way.
-    # Both ends kill EV regardless of how well-calibrated the signal is.
-    min_entry_price: float = 0.05
-    max_entry_price: float = 0.95
+    # Phase Q.6b (revised after operator probe of real Polymarket spreads):
+    #
+    # The original $0.05 floor was wrong — operator caught it. Direct
+    # /book queries showed even Polymarket's HIGHEST-volume markets
+    # ($30M-$50M traded) routinely have 195-200% bid-ask spreads
+    # because the bid side is just dust ($0.01) and the ask is at the
+    # $0.99 ceiling. So "price" is a useless filter for liquidity.
+    # The actual issue is SPREAD QUALITY.
+    #
+    # Two filters instead of one:
+    #   1. Micro-price floor ($0.01) — only to skip truly degenerate
+    #      contracts. Legitimate longshots at $0.02-0.04 stay tradeable.
+    #   2. Max spread fraction (default 25% of mid). Rejects markets
+    #      where (ask-bid)/mid > threshold. Naturally kills both the
+    #      "Bernie Sanders 2028 at $0.001/$0.999" trap AND the
+    #      "Aramco at $0.002/$0.003" trap, regardless of price level.
+    min_entry_price: float = 0.01
+    max_entry_price: float = 0.99
+    max_spread_fraction_of_mid: float = 0.25
 
 
 def check_market_liquidity(signal: AggregatedSignal, limits: RiskLimits) -> str | None:
@@ -97,14 +109,13 @@ def check_entry_price_band(
     signal: AggregatedSignal,
     limits: RiskLimits,
 ) -> str | None:
-    """Phase Q.6b: keep entries inside the EV-viable price band.
+    """Phase Q.6b: keep entries out of the extreme micro-price zone.
 
-    Outside [min_entry_price, max_entry_price] the bid-ask spread is wider
-    than the predicted edge, so the math is negative before slippage.
-    The strategy logic might still produce a "valid" signal there (e.g.
-    stat_quant.momentum buying $0.002 lottery tickets), but the risk
-    policy is the right place to enforce a hard floor — it's a
-    cross-strategy constraint, not a strategy-specific one.
+    Just a sanity floor/ceiling now — the real liquidity gate is the
+    spread check below. Operator's manual probe of Polymarket showed
+    that price alone is a useless quality signal: Bernie Sanders 2028
+    at $0.50 mid still has a 197% bid-ask spread because there is no
+    real bid book, only $0.001 dust.
     """
     if signal.proposed_price is None:
         return None
@@ -113,6 +124,37 @@ def check_entry_price_band(
         return f"price_below_floor:{p:.4f}<{limits.min_entry_price:.4f}"
     if p > limits.max_entry_price:
         return f"price_above_ceiling:{p:.4f}>{limits.max_entry_price:.4f}"
+    return None
+
+
+def check_book_spread(
+    signal: AggregatedSignal,
+    limits: RiskLimits,
+    best_bid: float | None,
+    best_ask: float | None,
+) -> str | None:
+    """Phase Q.6b+: reject entries where bid-ask spread > max fraction
+    of mid. This is the REAL liquidity quality gate — most Polymarket
+    markets have dust bids ($0.001) and ceiling asks ($0.999), which
+    looks like "mid=$0.50" but is unfillable on the bid side. We'd
+    enter at the ask and have nowhere to exit except a price collapse.
+
+    If bid or ask is missing, return None (let the existing best_ask
+    check or strategy emit step handle that case).
+    """
+    if best_bid is None or best_ask is None:
+        return None
+    if best_bid <= 0 or best_ask <= 0:
+        return None
+    mid = (best_bid + best_ask) / 2.0
+    if mid <= 0:
+        return None
+    spread = best_ask - best_bid
+    if spread <= 0:
+        return None
+    frac = spread / mid
+    if frac > limits.max_spread_fraction_of_mid:
+        return f"spread_too_wide:{frac:.3f}>{limits.max_spread_fraction_of_mid:.3f}"
     return None
 
 

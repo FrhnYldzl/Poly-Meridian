@@ -17,6 +17,7 @@ from abc import ABC, abstractmethod
 from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
+from typing import Any, Callable
 
 import structlog
 
@@ -31,6 +32,7 @@ from poly_meridian.domain import (
 from poly_meridian.risk.kill_switch import KillSwitch
 from poly_meridian.risk.limits import (
     RiskLimits,
+    check_book_spread,
     check_category_exposure,
     check_daily_loss,
     check_entry_price_band,
@@ -114,6 +116,17 @@ class DefaultRiskPolicy(RiskPolicy):
         self._token_to_event: dict[str, str] = {}
         # signal.condition_id → event_id, for the same-event check.
         self._condition_to_event: dict[str, str] = {}
+        # Phase Q.6b+ — book lookup callable. Pipeline injects a fn that
+        # maps token_id -> (best_bid, best_ask) | None so the spread
+        # quality check can read the live book without bringing the
+        # whole LocalBook type dependency into the policy.
+        self._book_lookup: Callable[[str], tuple[float, float] | None] | None = None
+
+    def set_book_lookup(
+        self, fn: Callable[[str], tuple[float, float] | None]
+    ) -> None:
+        """Pipeline injects a callable token_id → (bid, ask) | None."""
+        self._book_lookup = fn
 
     def register_market(
         self,
@@ -169,10 +182,13 @@ class DefaultRiskPolicy(RiskPolicy):
             check_daily_loss(portfolio, self.limits),
             check_open_position_count(portfolio, self.limits),
             check_market_liquidity(signal, self.limits),
-            # Phase Q.6b — keep entries inside the EV-viable price band
-            # ([0.05, 0.95] by default). Lottery-ticket and certainty-bet
-            # contracts have spreads that swallow any predicted edge.
+            # Phase Q.6b — micro-price sanity floor/ceiling.
             check_entry_price_band(signal, self.limits),
+            # Phase Q.6b+ — the REAL liquidity gate. Polymarket's most-
+            # active markets routinely have 195%+ spreads because the
+            # bid book is dust; we'd be entering at ask with no real
+            # exit. Reject when (ask-bid)/mid > max_spread_fraction.
+            self._check_spread_via_lookup(signal),
             # Phase Q.3 — block adding to existing position on the same
             # condition (incl. opposite leg, which would be self-hedge).
             check_same_condition(
@@ -290,6 +306,19 @@ class DefaultRiskPolicy(RiskPolicy):
             paired_price=signal.paired_price,
             paired_side=paired_side,
         )
+
+    def _check_spread_via_lookup(self, signal: AggregatedSignal) -> str | None:
+        """Wrapper that resolves the book and calls check_book_spread."""
+        if self._book_lookup is None:
+            return None  # no lookup wired → skip check (fail-open for tests)
+        try:
+            res = self._book_lookup(signal.token_id)
+        except Exception:
+            return None
+        if res is None:
+            return None
+        best_bid, best_ask = res
+        return check_book_spread(signal, self.limits, best_bid, best_ask)
 
     def _reject(self, signal: AggregatedSignal, reason: str, **kw: object) -> RiskDecision:
         log.warning(

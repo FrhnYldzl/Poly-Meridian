@@ -96,6 +96,22 @@ class Pipeline:
         self.ledger = ledger
         self.token_to_category: dict[str, str] = token_to_category or {}
         self._books: dict[str, LocalBook] = {}
+        # Phase Q.6b+ — give risk a way to read live (bid, ask) for a
+        # token so the spread-quality check works.
+        if hasattr(self.risk, "set_book_lookup"):
+            self.risk.set_book_lookup(self._lookup_bid_ask)
+
+    def _lookup_bid_ask(self, token_id: str) -> tuple[float, float] | None:
+        """Return (best_bid, best_ask) as floats, or None if either side
+        is missing. Used by RiskPolicy.check_book_spread."""
+        b = self._books.get(token_id)
+        if b is None:
+            return None
+        bid = b.best_bid()
+        ask = b.best_ask()
+        if bid is None or ask is None:
+            return None
+        return float(bid[0]), float(ask[0])
 
     def attach_book(self, token_id: str, book: LocalBook) -> None:
         self._books[token_id] = book
