@@ -33,6 +33,7 @@ from poly_meridian.risk.limits import (
     RiskLimits,
     check_category_exposure,
     check_daily_loss,
+    check_entry_price_band,
     check_market_liquidity,
     check_open_position_count,
     check_position_size_cap,
@@ -168,6 +169,10 @@ class DefaultRiskPolicy(RiskPolicy):
             check_daily_loss(portfolio, self.limits),
             check_open_position_count(portfolio, self.limits),
             check_market_liquidity(signal, self.limits),
+            # Phase Q.6b — keep entries inside the EV-viable price band
+            # ([0.05, 0.95] by default). Lottery-ticket and certainty-bet
+            # contracts have spreads that swallow any predicted edge.
+            check_entry_price_band(signal, self.limits),
             # Phase Q.3 — block adding to existing position on the same
             # condition (incl. opposite leg, which would be self-hedge).
             check_same_condition(

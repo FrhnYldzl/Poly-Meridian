@@ -37,6 +37,13 @@ class RiskLimits:
     # and per event (soft).
     max_positions_per_condition: int = 1   # YES OR NO on a condition, never both
     max_positions_per_event: int = 2       # related Polymarket markets share event_id
+    # Phase Q.6b — price floor/ceiling. At <$0.05 the bid-ask spread on
+    # Polymarket is routinely 30-50% of the contract price (e.g. Aramco
+    # YES at $0.002 with $0.003 ask = -33% lost on entry). At >$0.95 the
+    # remaining upside is <5% so risk-reward is asymmetric the wrong way.
+    # Both ends kill EV regardless of how well-calibrated the signal is.
+    min_entry_price: float = 0.05
+    max_entry_price: float = 0.95
 
 
 def check_market_liquidity(signal: AggregatedSignal, limits: RiskLimits) -> str | None:
@@ -83,6 +90,29 @@ def check_category_exposure(
 def check_open_position_count(portfolio: PortfolioSnapshot, limits: RiskLimits) -> str | None:
     if portfolio.open_position_count >= limits.max_open_positions:
         return f"max_open_positions_reached:{portfolio.open_position_count}>={limits.max_open_positions}"
+    return None
+
+
+def check_entry_price_band(
+    signal: AggregatedSignal,
+    limits: RiskLimits,
+) -> str | None:
+    """Phase Q.6b: keep entries inside the EV-viable price band.
+
+    Outside [min_entry_price, max_entry_price] the bid-ask spread is wider
+    than the predicted edge, so the math is negative before slippage.
+    The strategy logic might still produce a "valid" signal there (e.g.
+    stat_quant.momentum buying $0.002 lottery tickets), but the risk
+    policy is the right place to enforce a hard floor — it's a
+    cross-strategy constraint, not a strategy-specific one.
+    """
+    if signal.proposed_price is None:
+        return None
+    p = float(signal.proposed_price)
+    if p < limits.min_entry_price:
+        return f"price_below_floor:{p:.4f}<{limits.min_entry_price:.4f}"
+    if p > limits.max_entry_price:
+        return f"price_above_ceiling:{p:.4f}>{limits.max_entry_price:.4f}"
     return None
 
 

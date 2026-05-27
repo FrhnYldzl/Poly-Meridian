@@ -1702,6 +1702,12 @@ async def run() -> None:
         broker=broker,
         market_cache=market_cache,
         kill_switch=pipeline.risk.kill_switch,
+        # Phase Q.6a: drop the dust floor from $25 to $1. The default
+        # was sized for institutional NAV; a $250 paper account caps
+        # each position at $5 (max_position_pct_of_bankroll=0.05), so
+        # NO position ever cleared $25 and the monitor effectively
+        # ignored ALL exits. Aramco at -42% sat open because of this.
+        min_position_notional_usd=1.0,
     )
     pipeline.exit_monitor = exit_monitor  # type: ignore[attr-defined]
     tasks.append(

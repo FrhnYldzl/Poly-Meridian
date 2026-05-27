@@ -60,7 +60,10 @@ class ExitMonitor:
         profit_take_pct: float = 0.20,    # close when MTM ≥ +20% of cost
         stop_loss_pct: float = 0.30,      # close when MTM ≤ -30% of cost
         time_decay_safety_hours: float = 6.0,
-        min_position_notional_usd: float = 25.0,
+        # Q.6a: was 25.0 — silently masked all exits when NAV was small
+        # enough that no single position cleared $25. Default sized for
+        # paper-mode $250 NAV reality. Caller can raise it in production.
+        min_position_notional_usd: float = 1.0,
         scan_interval_sec: int = 10,
     ) -> None:
         self.ledger = ledger
