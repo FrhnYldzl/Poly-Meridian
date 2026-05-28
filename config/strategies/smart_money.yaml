@@ -1,6 +1,6 @@
 # SmartMoneyStrategy v2 (3-tier) — see MASTER_SPEC v1.1 §14.3.
 
-enabled: true
+enabled: false
 
 # Cluster thresholds (mandatory filter)
 tier1_min_cluster: 3        # ≥3 Tier 1 wallets same direction → auto-trade full

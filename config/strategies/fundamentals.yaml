@@ -1,6 +1,6 @@
 # FundamentalsStrategy — see MASTER_SPEC §14.5.
 
-enabled: true
+enabled: false
 
 # Aggregate thresholds across all categories
 min_edge: 0.05                       # |our_p - market_p| must exceed this

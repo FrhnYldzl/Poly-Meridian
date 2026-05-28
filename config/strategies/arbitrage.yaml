@@ -1,6 +1,6 @@
 # ArbitrageStrategy — see MASTER_SPEC §14.1.
 
-enabled: true
+enabled: false
 imbalance_threshold: 0.015          # |YES_ask + NO_ask - 1.00| trigger
 event_set_threshold: 0.02
 maker_first: true

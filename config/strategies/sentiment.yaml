@@ -1,6 +1,6 @@
 # SentimentStrategy — see MASTER_SPEC §14.2.
 
-enabled: true
+enabled: false
 window_sec: 1800                     # last 30 min of news + tweets
 impact_threshold: 0.6
 min_signals: 1

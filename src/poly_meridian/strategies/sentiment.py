@@ -37,11 +37,8 @@ class SentimentStrategy(BaseStrategy):
     """
 
     def __init__(self, config: dict[str, Any]) -> None:
-        # Phase S.2 — enable by default. Q.3 concentration guards prevent
-        # same-condition piling, and the cross-strategy disagreement
-        # check in the aggregator blocks conflict trades. Sentiment can
-        # safely run alongside Fundamentals/StatQuant.
-        super().__init__(name="sentiment", config=config, enabled=config.get("enabled", True))
+        # FROZEN: disabled by default (operator decision to halt trading).
+        super().__init__(name="sentiment", config=config, enabled=config.get("enabled", False))
         self.window_sec = int(config.get("window_sec", 1800))
         self.impact_threshold = float(config.get("impact_threshold", 0.6))
         self.min_signals = int(config.get("min_signals", 1))

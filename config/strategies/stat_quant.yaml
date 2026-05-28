@@ -4,7 +4,7 @@
 # Paper accepts more trades by design so we can validate the order path
 # end-to-end; live thresholds bump back up via promotion checklist.
 
-enabled: true
+enabled: false
 
 mean_reversion:
   zscore_threshold: 1.5         # was 2.0 — more triggers in noisy book

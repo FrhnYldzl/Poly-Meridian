@@ -36,7 +36,8 @@ class ArbitrageStrategy(BaseStrategy):
     """
 
     def __init__(self, config: dict[str, Any]) -> None:
-        super().__init__(name="arbitrage", config=config, enabled=config.get("enabled", True))
+        # FROZEN: disabled by default (operator decision to halt trading).
+        super().__init__(name="arbitrage", config=config, enabled=config.get("enabled", False))
         self.imbalance_threshold = float(config.get("imbalance_threshold", 0.015))
         self.conviction_default = float(config.get("conviction_default", 0.95))
         self.min_edge_after_fees_bps = float(config.get("min_edge_after_fees_bps", 30))

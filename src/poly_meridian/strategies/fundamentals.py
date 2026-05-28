@@ -49,10 +49,10 @@ class FundamentalsStrategy(BaseStrategy):
         resolvers: dict[str, CategoryResolver] | None = None,
         llm_resolver: LLMResolver | None = None,
     ) -> None:
-        # Phase R.3: enable by default now that LLMResolver fills the
-        # previously-empty data path. Operator can still disable via
-        # config/strategies/fundamentals.yaml: { enabled: false }.
-        super().__init__(name="fundamentals", config=config, enabled=config.get("enabled", True))
+        # FROZEN: disabled by default (operator decision to halt spend).
+        # Was Phase R.3 enabled=True with LLM resolver. Set
+        # FUNDAMENTALS_ENABLED=true / config flag to re-enable.
+        super().__init__(name="fundamentals", config=config, enabled=config.get("enabled", False))
         self.min_edge = float(config.get("min_edge", 0.05))
         self.min_confidence = float(config.get("min_confidence", 0.5))
         self.max_size_pct = float(config.get("max_size_pct", 0.025))
